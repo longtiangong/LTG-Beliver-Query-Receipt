@@ -10,7 +10,6 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 from reportlab.lib.pagesizes import A5
-from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
@@ -135,7 +134,7 @@ def fetch_receipt_records():
     return pd.DataFrame(data["records"])
 
 
-def save_receipt_record(receipt):
+def save_receipt_record(receipt, pdf_bytes):
     """將收據存入 Google Sheet 的收據總表"""
     if not GAS_URL:
         st.error("未設定 GAS_URL，無法儲存收據。")
@@ -150,6 +149,7 @@ def save_receipt_record(receipt):
                 "action": "saveReceipt",
                 "apiKey": GAS_API_KEY,
                 "receipt": receipt,
+                "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
             },
             timeout=30,
         )
@@ -179,16 +179,53 @@ def save_receipt_record(receipt):
     return data["record"]
 
 
-def create_receipt_qr(receipt):
-    """在本機產生不含地址、可掃描及保存的收據文字 QR PNG"""
-    qr_payload = format_receipt_document(receipt)
+def save_receipt_qr(receipt_id, qr_bytes):
+    """將指向收執聯 PDF 的 QR 圖片存入 Google Sheet"""
+    if not GAS_URL or not GAS_API_KEY:
+        st.error("未設定 GAS_URL 或 GAS_API_KEY，無法儲存收據 QR 碼。")
+        return False
+    try:
+        response = requests.post(
+            GAS_URL,
+            json={
+                "action": "attachReceiptQr",
+                "apiKey": GAS_API_KEY,
+                "receiptId": receipt_id,
+                "qrCodeBase64": base64.b64encode(qr_bytes).decode("ascii"),
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.exceptions.RequestException as error:
+        st.error(f"儲存收據 QR 碼發生錯誤：{error}")
+        return False
+    except requests.exceptions.JSONDecodeError:
+        st.error("儲存收據 QR 碼失敗：Google Apps Script 回應不是有效的 JSON。")
+        return False
+
+    if not isinstance(data, dict) or data.get("status") != "success":
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"儲存收據 QR 碼失敗：{message}")
+        return False
+
+    st.cache_data.clear()
+    return True
+
+
+def create_receipt_qr(pdf_url):
+    """在本機產生直接連到私有收執聯 PDF 的 QR PNG"""
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=4,
         border=2,
     )
-    qr.add_data(qr_payload)
+    qr.add_data(pdf_url)
     qr.make(fit=True)
     qr_image = qr.make_image(fill_color="black", back_color="white")
     qr_buffer = BytesIO()
@@ -221,52 +258,89 @@ def create_receipt_jpg(qr_bytes):
     return jpg_buffer.getvalue()
 
 
-def create_receipt_pdf(receipt_text, qr_bytes):
-    """製作含收據文字及 QR code、不含地址的 A5 PDF"""
+def create_receipt_pdf(receipt):
+    """製作與收執聯預覽相同的 A5 上下聯 PDF"""
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     pdf_buffer = BytesIO()
     page_width, page_height = A5
     pdf = canvas.Canvas(pdf_buffer, pagesize=A5)
-    margin = 36
-    qr_size = 104
-    text_x = margin
-    text_y = page_height - margin - qr_size - 32
+    margin = 24
+    cut_gap = 12
+    copy_height = (page_height - margin * 2 - cut_gap) / 2
+    fields = [
+        ("開立時間", str(receipt["開立時間"])),
+        ("收據編號", str(receipt["收據編號"])),
+        ("信徒姓名", str(receipt["姓名"])),
+        ("住址", str(receipt.get("地址") or "無")),
+        ("辦理項目", str(receipt["辦理項目"])),
+        ("收到金額", f"NT$ {float(receipt['收到金額']):,.0f}"),
+        ("備註", str(receipt.get("備註") or "無")),
+    ]
 
-    pdf.setFont("STSong-Light", 16)
-    pdf.drawCentredString(page_width / 2, page_height - margin, "龍天宮 收執聯／存根聯")
-    pdf.drawImage(
-        ImageReader(BytesIO(qr_bytes)),
-        page_width - margin - qr_size,
-        page_height - margin - qr_size - 12,
-        width=qr_size,
-        height=qr_size,
-        preserveAspectRatio=True,
-        mask="auto",
-    )
+    for copy_index, copy_title in enumerate(["收執聯", "存根聯"]):
+        copy_top = page_height - margin - copy_index * (copy_height + cut_gap)
+        copy_bottom = copy_top - copy_height
+        pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
+        pdf.rect(
+            margin,
+            copy_bottom,
+            page_width - margin * 2,
+            copy_height,
+        )
 
-    pdf.setFont("STSong-Light", 10)
-    max_width = page_width - margin * 2
-    for line in receipt_text.splitlines()[1:]:
-        wrapped_lines = []
-        current_line = ""
-        for character in line:
-            candidate = current_line + character
-            if current_line and pdfmetrics.stringWidth(
-                candidate, "STSong-Light", 10
-            ) > max_width:
-                wrapped_lines.append(current_line)
-                current_line = character
-            else:
-                current_line = candidate
-        wrapped_lines.append(current_line)
+        pdf.setFillColorRGB(0.55, 0.0, 0.0)
+        pdf.setFont("STSong-Light", 16)
+        pdf.drawCentredString(
+            page_width / 2,
+            copy_top - 25,
+            "龍天宮 " + copy_title,
+        )
 
-        for wrapped_line in wrapped_lines:
-            if text_y < margin + 20:
-                pdf.showPage()
-                pdf.setFont("STSong-Light", 10)
-                text_y = page_height - margin
-            pdf.drawString(text_x, text_y, wrapped_line)
-            text_y -= 18
+        text_x = margin + 14
+        text_y = copy_top - 49
+        max_width = page_width - margin * 2 - 28
+        pdf.setFillColorRGB(0.15, 0.15, 0.15)
+        pdf.setFont("STSong-Light", 10)
+
+        for label, value in fields:
+            line = f"{label}：{value}"
+            wrapped_lines = []
+            current_line = ""
+            for character in line:
+                candidate = current_line + character
+                if current_line and pdfmetrics.stringWidth(
+                    candidate, "STSong-Light", 10
+                ) > max_width:
+                    wrapped_lines.append(current_line)
+                    current_line = character
+                else:
+                    current_line = candidate
+            wrapped_lines.append(current_line)
+
+            for wrapped_line in wrapped_lines:
+                pdf.drawString(text_x, text_y, wrapped_line)
+                text_y -= 14
+
+        signature_y = copy_bottom + 18
+        pdf.drawString(text_x, signature_y + 9, "經手人/蓋章：")
+        pdf.line(text_x + 64, signature_y + 7, text_x + 150, signature_y + 7)
+
+        seal_size = 58
+        seal_x = page_width - margin - 14 - seal_size
+        seal_y = copy_bottom + 12
+        pdf.setStrokeColorRGB(0.7, 0.08, 0.08)
+        pdf.setLineWidth(2)
+        pdf.rect(seal_x, seal_y, seal_size, seal_size)
+        pdf.setLineWidth(0.8)
+        pdf.rect(seal_x + 4, seal_y + 4, seal_size - 8, seal_size - 8)
+        pdf.setFillColorRGB(0.7, 0.08, 0.08)
+        pdf.setFont("STSong-Light", 11)
+        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 32, "龍天宮")
+        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 17, "管委會")
+
+    pdf.setDash(3, 2)
+    pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
+    pdf.line(margin, page_height / 2, page_width - margin, page_height / 2)
 
     pdf.save()
     return pdf_buffer.getvalue()
@@ -516,17 +590,21 @@ elif menu_option == "二、各類收據開立":
                     "收到金額": r_amount,
                     "備註": r_note.strip(),
                 }
-                qr_bytes = create_receipt_qr(receipt_draft)
-                receipt_draft["qrCodeBase64"] = base64.b64encode(
-                    qr_bytes
-                ).decode("ascii")
-                receipt = save_receipt_record(receipt_draft)
+                pdf_bytes = create_receipt_pdf(receipt_draft)
+                receipt = save_receipt_record(receipt_draft, pdf_bytes)
                 if receipt:
+                    qr_bytes = create_receipt_qr(receipt["PDF連結"])
+                    qr_saved = save_receipt_qr(
+                        receipt["收據編號"], qr_bytes
+                    )
                     st.session_state["active_receipt"] = receipt
                     st.session_state["active_receipt_qr"] = qr_bytes
+                    st.session_state["active_receipt_pdf"] = pdf_bytes
                     st.success(
-                        f"收據 {receipt['收據編號']} 已加入收據總表。"
+                        f"收據 {receipt['收據編號']} 已建立 PDF 並加入收據總表。"
                     )
+                    if qr_saved:
+                        st.success("QR code 已更新為收執聯 PDF 連結。")
 
         receipt = st.session_state.get("active_receipt")
         if receipt:
@@ -537,7 +615,12 @@ elif menu_option == "二、各類收據開立":
             receipt_note = str(receipt["備註"])
             qr_bytes = st.session_state.get("active_receipt_qr")
             if not qr_bytes:
-                qr_bytes = create_receipt_qr(receipt)
+                qr_bytes = create_receipt_qr(receipt["PDF連結"])
+                st.session_state["active_receipt_qr"] = qr_bytes
+            pdf_bytes = st.session_state.get("active_receipt_pdf")
+            if not pdf_bytes:
+                pdf_bytes = create_receipt_pdf(receipt)
+                st.session_state["active_receipt_pdf"] = pdf_bytes
             qr_data_uri = (
                 "data:image/png;base64,"
                 + base64.b64encode(qr_bytes).decode("ascii")
@@ -545,9 +628,10 @@ elif menu_option == "二、各類收據開立":
 
             st.image(
                 qr_bytes,
-                caption="收據 QR code（與收執聯內容相同，不含地址）",
+                caption="掃描 QR code 即可開啟收執聯 PDF",
                 width=160,
             )
+            st.link_button("開啟收執聯 PDF", receipt["PDF連結"])
             download_columns = st.columns(3)
             download_columns[0].download_button(
                 "下載收據文字檔",
@@ -565,7 +649,7 @@ elif menu_option == "二、各類收據開立":
             )
             download_columns[2].download_button(
                 "下載收據 PDF",
-                data=create_receipt_pdf(receipt_text, qr_bytes),
+                data=pdf_bytes,
                 file_name=f"{receipt_id}.pdf",
                 mime="application/pdf",
                 key=f"download_receipt_pdf_{receipt_id}",
@@ -768,6 +852,7 @@ elif menu_option == "二、各類收據開立":
                 "辦理項目",
                 "收到金額",
                 "備註",
+                "PDF連結",
                 "QR碼",
             ]
             available_columns = [
@@ -779,4 +864,10 @@ elif menu_option == "二、各類收據開立":
                 receipt_records[available_columns],
                 use_container_width=True,
                 hide_index=True,
+                column_config={
+                    "PDF連結": st.column_config.LinkColumn(
+                        "收執聯 PDF",
+                        display_text="開啟 PDF",
+                    )
+                },
             )
