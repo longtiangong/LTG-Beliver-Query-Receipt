@@ -395,7 +395,7 @@ elif menu_option == "二、各類收據開立":
                         <p><b>備註：</b> {escaped_note}</p>
                         <div class="signature">
                             <span><b>經手人/蓋章：</b> __________________</span>
-                            <span class="temple">龍天宮 敬啓</span>
+                            <span class="temple">龍天宮管理委員會 敬啓</span>
                         </div>
                     </div>
                     <button class="print-button" onclick="window.print()">🖨️ 列印收執聯</button>
