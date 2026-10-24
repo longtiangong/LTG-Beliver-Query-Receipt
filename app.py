@@ -533,7 +533,8 @@ elif menu_option == "二、各類收據開立":
                 if sub_option:
                     full_option += f" ({sub_option})"
 
-                issued_at = datetime.datetime.now()
+                taiwan_timezone = datetime.timezone(datetime.timedelta(hours=8))
+                issued_at = datetime.datetime.now(taiwan_timezone)
                 opened_at = issued_at.strftime("%Y-%m-%d %H:%M:%S")
                 receipt_draft = {
                     "收據編號": (
