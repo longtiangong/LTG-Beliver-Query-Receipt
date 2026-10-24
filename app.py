@@ -1,5 +1,9 @@
+import base64
 import datetime
 import html
+from io import BytesIO
+
+import qrcode
 import requests
 import pandas as pd
 import streamlit as st
@@ -31,6 +35,7 @@ if not st.session_state.authenticated:
 # 2. API Helper Function (存取 Google Apps Script)
 # -----------------------------------------------------------------------------
 GAS_URL = st.secrets.get("GAS_URL", "")
+GAS_API_KEY = st.secrets.get("GAS_API_KEY", "")
 
 
 @st.cache_data(ttl=60)
@@ -82,6 +87,89 @@ def save_believer_data(payload):
     except Exception as e:
         st.error(f"寫入發生例外狀況: {e}")
         return False
+
+
+@st.cache_data(ttl=30)
+def fetch_receipt_records():
+    """從受 API 金鑰保護的 GAS 端點讀取收據總表"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法讀取收據總表。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，請先完成收據總表 API 金鑰設定。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={"action": "listReceipts", "apiKey": GAS_API_KEY},
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"讀取收據總表發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("讀取收據總表失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if (
+        not isinstance(data, dict)
+        or data.get("status") != "success"
+        or not isinstance(data.get("records"), list)
+    ):
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"讀取收據總表失敗：{message}")
+        return None
+    return pd.DataFrame(data["records"])
+
+
+def save_receipt_record(receipt):
+    """將收據存入 Google Sheet 的收據總表"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法儲存收據。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，請先完成收據總表 API 金鑰設定。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={
+                "action": "saveReceipt",
+                "apiKey": GAS_API_KEY,
+                "receipt": receipt,
+            },
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"儲存收據發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("儲存收據失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if (
+        not isinstance(data, dict)
+        or data.get("status") != "success"
+        or not isinstance(data.get("record"), dict)
+    ):
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"儲存收據失敗：{message}")
+        return None
+
+    st.cache_data.clear()
+    return data["record"]
 
 
 # -----------------------------------------------------------------------------
@@ -233,7 +321,7 @@ elif menu_option == "二、各類收據開立":
 
     with col_l:
         st.subheader("1. 輸入收據資料")
-        r_name = st.text_input("信徒姓名", key="receipt_name")
+        r_name = st.text_input("大德姓名", key="receipt_name")
 
         if r_name != st.session_state.get("_receipt_lookup_name"):
             st.session_state["receipt_address"] = ""
@@ -291,148 +379,256 @@ elif menu_option == "二、各類收據開立":
         elif receipt_type == "7. 進香":
             sub_option = st.radio("選擇行程", ["南巡", "北巡"], horizontal=True)
 
+        r_amount = st.number_input(
+            "收到金額（元）", min_value=0, value=0, step=1
+        )
         r_note = st.text_area("備註說明", placeholder="可在此輸入詳細細節或金額等備註...")
 
-        generate_btn = st.button("🧾 生成收執聯", type="primary")
+        # * 2 收據金額輸入、總表永久保存及 QR code 生成
+        generate_btn = st.button(
+            "🧾 登記收據並準備列印", type="primary"
+        )
 
     with col_r:
         st.subheader("2. 收執聯預覽/呈現")
 
         if generate_btn:
-            if not r_name:
-                st.warning("請先輸入信徒姓名！")
+            if not r_name.strip():
+                st.warning("請先輸入大德姓名！")
             else:
-                current_time = datetime.datetime.now().strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-
-                # 組合選項名稱
                 full_option = receipt_type
                 if sub_option:
                     full_option += f" ({sub_option})"
 
-                escaped_name = html.escape(r_name)
-                escaped_address = html.escape(r_address or "無")
-                escaped_option = html.escape(full_option)
-                escaped_note = html.escape(r_note or "無").replace("\n", "<br>")
+                receipt = save_receipt_record(
+                    {
+                        "姓名": r_name.strip(),
+                        "地址": r_address.strip(),
+                        "辦理項目": full_option,
+                        "收到金額": r_amount,
+                        "備註": r_note.strip(),
+                    }
+                )
+                if receipt:
+                    st.session_state["active_receipt"] = receipt
+                    st.success(
+                        f"收據 {receipt['收據編號']} 已加入收據總表。"
+                    )
 
-                # * 1 A5 直式收執聯／存根聯上下排列，中間以虛線裁切
-                receipt_details = f"""
-                    <p class="time"><b>開立時間：</b>{current_time}</p>
-                    <p><b>信徒姓名：</b>{escaped_name}</p>
-                    <p><b>住址：</b>{escaped_address}</p>
-                    <p><b>辦理項目：</b><span class="option">{escaped_option}</span></p>
-                    <p><b>備註：</b>{escaped_note}</p>
-                    <div class="signature">
-                        <span><b>經手人/蓋章：</b> ______________</span>
-                        <span class="temple">龍天宮管理委員會 敬啓</span>
+        receipt = st.session_state.get("active_receipt")
+        if receipt:
+            receipt_id = str(receipt["收據編號"])
+            receipt_name = str(receipt["姓名"])
+            receipt_amount = float(receipt["收到金額"])
+            receipt_note = str(receipt["備註"])
+            qr_payload = "\n".join(
+                [
+                    f"收據編號：{receipt_id}",
+                    f"姓名：{receipt_name}",
+                    f"收到金額：{receipt_amount:,.0f} 元",
+                    f"備註：{receipt_note or '無'}",
+                ]
+            )
+            qr = qrcode.QRCode(
+                version=None,
+                error_correction=qrcode.constants.ERROR_CORRECT_M,
+                box_size=4,
+                border=2,
+            )
+            qr.add_data(qr_payload)
+            qr.make(fit=True)
+            qr_image = qr.make_image(fill_color="black", back_color="white")
+            qr_buffer = BytesIO()
+            qr_image.save(qr_buffer, format="PNG")
+            qr_bytes = qr_buffer.getvalue()
+            qr_data_uri = (
+                "data:image/png;base64,"
+                + base64.b64encode(qr_bytes).decode("ascii")
+            )
+
+            st.image(
+                qr_bytes,
+                caption="收據 QR code（含編號、姓名、金額、備註）",
+                width=160,
+            )
+
+            escaped_id = html.escape(receipt_id)
+            escaped_time = html.escape(str(receipt["開立時間"]))
+            escaped_name = html.escape(receipt_name)
+            escaped_address = html.escape(str(receipt["地址"]) or "無")
+            escaped_option = html.escape(str(receipt["辦理項目"]))
+            escaped_amount = f"{receipt_amount:,.0f}"
+            escaped_note = html.escape(receipt_note or "無").replace(
+                "\n", "<br>"
+            )
+
+            # * 1 A5 直式收執聯／存根聯上下排列，中間以虛線裁切
+            receipt_details = f"""
+                <div class="copy-content">
+                    <div>
+                        <p class="time"><b>開立時間：</b>{escaped_time}</p>
+                        <p><b>收據編號：</b>{escaped_id}</p>
+                        <p><b>信徒姓名：</b>{escaped_name}</p>
+                        <p><b>住址：</b>{escaped_address}</p>
+                        <p><b>辦理項目：</b><span class="option">{escaped_option}</span></p>
+                        <p><b>收到金額：</b>NT$ {escaped_amount}</p>
+                        <p><b>備註：</b>{escaped_note}</p>
                     </div>
-                """
+                    <img class="qr-code" src="{qr_data_uri}" alt="收據 QR code">
+                </div>
+                <div class="signature">
+                    <span><b>經手人/蓋章：</b> ______________</span>
+                    <span class="temple">龍天宮管理委員會 敬啓</span>
+                </div>
+            """
 
-                st.components.v1.html(
-                    f"""
-                    <style>
-                        body {{
-                            margin: 0;
-                            font-family: sans-serif;
-                            color: #333;
+            st.components.v1.html(
+                f"""
+                <style>
+                    body {{
+                        margin: 0;
+                        font-family: sans-serif;
+                        color: #333;
+                    }}
+                    .copies {{
+                        box-sizing: border-box;
+                        display: grid;
+                        grid-template-rows: 1fr auto 1fr;
+                        gap: 8px;
+                    }}
+                    .receipt-copy {{
+                        box-sizing: border-box;
+                        padding: 12px 16px;
+                        border: 1px solid #8B0000;
+                        background: #FFFDF0;
+                    }}
+                    .receipt-copy h2 {{
+                        margin: 0 0 4px;
+                        text-align: center;
+                        color: #8B0000;
+                        font-size: 1.25em;
+                    }}
+                    .copy-content {{
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;
+                    }}
+                    .receipt-copy p {{
+                        margin: 4px 0;
+                        font-size: 0.9em;
+                        line-height: 1.25;
+                        overflow-wrap: anywhere;
+                    }}
+                    .receipt-copy .time {{
+                        color: #666;
+                        font-size: 0.75em;
+                    }}
+                    .receipt-copy .option {{
+                        color: #D9534F;
+                        font-weight: bold;
+                    }}
+                    .qr-code {{
+                        width: 68px;
+                        height: 68px;
+                        flex: 0 0 68px;
+                    }}
+                    .receipt-copy .signature {{
+                        display: flex;
+                        justify-content: space-between;
+                        gap: 12px;
+                        margin-top: 8px;
+                        font-size: 0.78em;
+                    }}
+                    .receipt-copy .temple {{
+                        color: #8B0000;
+                        font-weight: bold;
+                    }}
+                    .cut-line {{
+                        border-top: 2px dashed #8B0000;
+                        color: #8B0000;
+                        font-size: 0.75em;
+                        text-align: center;
+                        line-height: 1;
+                    }}
+                    .print-button {{
+                        margin-top: 12px;
+                        padding: 8px 16px;
+                        border: 0;
+                        border-radius: 6px;
+                        background: #8B0000;
+                        color: white;
+                        font-size: 1em;
+                        cursor: pointer;
+                    }}
+                    @media print {{
+                        @page {{
+                            size: A5 portrait;
+                            margin: 8mm;
+                        }}
+                        html, body {{
+                            width: 100%;
+                            height: 194mm;
                         }}
                         .copies {{
-                            box-sizing: border-box;
-                            display: grid;
-                            grid-template-rows: 1fr auto 1fr;
-                            gap: 8px;
+                            height: 194mm;
+                            gap: 4px;
                         }}
                         .receipt-copy {{
-                            box-sizing: border-box;
-                            padding: 12px 16px;
-                            border: 1px solid #8B0000;
-                            background: #FFFDF0;
+                            padding: 8px 12px;
+                            print-color-adjust: exact;
+                            -webkit-print-color-adjust: exact;
                         }}
-                        .receipt-copy h2 {{
-                            margin: 0 0 4px;
-                            text-align: center;
-                            color: #8B0000;
-                            font-size: 1.25em;
-                        }}
-                        .receipt-copy p {{
-                            margin: 5px 0;
-                            font-size: 0.95em;
-                            line-height: 1.35;
-                            overflow-wrap: anywhere;
-                        }}
-                        .receipt-copy .time {{
-                            color: #666;
-                            font-size: 0.8em;
-                        }}
-                        .receipt-copy .option {{
-                            color: #D9534F;
-                            font-weight: bold;
-                        }}
-                        .receipt-copy .signature {{
-                            display: flex;
-                            justify-content: space-between;
-                            gap: 16px;
-                            margin-top: 12px;
-                            font-size: 0.85em;
-                        }}
-                        .receipt-copy .temple {{
-                            color: #8B0000;
-                            font-weight: bold;
-                        }}
-                        .cut-line {{
-                            border-top: 2px dashed #8B0000;
-                            color: #8B0000;
-                            font-size: 0.75em;
-                            text-align: center;
-                            line-height: 1;
+                        .qr-code {{
+                            width: 62px;
+                            height: 62px;
+                            flex-basis: 62px;
                         }}
                         .print-button {{
-                            margin-top: 12px;
-                            padding: 8px 16px;
-                            border: 0;
-                            border-radius: 6px;
-                            background: #8B0000;
-                            color: white;
-                            font-size: 1em;
-                            cursor: pointer;
+                            display: none;
                         }}
-                        @media print {{
-                            @page {{
-                                size: A5 portrait;
-                                margin: 8mm;
-                            }}
-                            html, body {{
-                                width: 100%;
-                                height: 194mm;
-                            }}
-                            .copies {{
-                                height: 194mm;
-                                gap: 4px;
-                            }}
-                            .receipt-copy {{
-                                padding: 8px 12px;
-                                print-color-adjust: exact;
-                                -webkit-print-color-adjust: exact;
-                            }}
-                            .print-button {{
-                                display: none;
-                            }}
-                        }}
-                    </style>
-                    <div class="copies">
-                        <section class="receipt-copy">
-                            <h2>⛩️ 龍天宮 收執聯</h2>
-                            {receipt_details}
-                        </section>
-                        <div class="cut-line">沿虛線裁切</div>
-                        <section class="receipt-copy">
-                            <h2>⛩️ 龍天宮 存根聯</h2>
-                            {receipt_details}
-                        </section>
-                    </div>
-                    <button class="print-button" onclick="window.print()">🖨️ 列印 A5 上下聯</button>
-                    """,
-                    height=660,
-                    scrolling=False,
-                )
+                    }}
+                </style>
+                <div class="copies">
+                    <section class="receipt-copy">
+                        <h2>⛩️ 龍天宮 收執聯</h2>
+                        {receipt_details}
+                    </section>
+                    <div class="cut-line">沿虛線裁切</div>
+                    <section class="receipt-copy">
+                        <h2>⛩️ 龍天宮 存根聯</h2>
+                        {receipt_details}
+                    </section>
+                </div>
+                <button class="print-button" onclick="window.print()">🖨️ 列印收執聯/存根聯</button>
+                """,
+                height=660,
+                scrolling=False,
+            )
+
+    st.divider()
+    st.subheader("3. 收據總表")
+    receipt_records = fetch_receipt_records()
+    if receipt_records is not None:
+        if receipt_records.empty:
+            st.info("目前尚無收據紀錄。")
+        else:
+            column_order = [
+                "收據編號",
+                "開立時間",
+                "姓名",
+                "地址",
+                "辦理項目",
+                "收到金額",
+                "備註",
+            ]
+            available_columns = [
+                column
+                for column in column_order
+                if column in receipt_records.columns
+            ]
+            st.dataframe(
+                receipt_records[available_columns],
+                use_container_width=True,
+                hide_index=True,
+            )
