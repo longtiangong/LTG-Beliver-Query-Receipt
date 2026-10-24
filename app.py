@@ -1,13 +1,19 @@
 import base64
 import datetime
 import html
-import uuid
+import secrets
 from io import BytesIO
 
 import qrcode
 import requests
 import pandas as pd
 import streamlit as st
+from PIL import Image
+from reportlab.lib.pagesizes import A5
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfgen import canvas
 
 # 頁面基本設定
 st.set_page_config(
@@ -174,15 +180,8 @@ def save_receipt_record(receipt):
 
 
 def create_receipt_qr(receipt):
-    """在本機產生包含收據編號、姓名、金額和備註的 QR PNG"""
-    qr_payload = "\n".join(
-        [
-            f"收據編號：{receipt['收據編號']}",
-            f"姓名：{receipt['姓名']}",
-            f"收到金額：{float(receipt['收到金額']):,.0f} 元",
-            f"備註：{receipt['備註'] or '無'}",
-        ]
-    )
+    """在本機產生不含地址、可掃描及保存的收據文字 QR PNG"""
+    qr_payload = format_receipt_document(receipt)
     qr = qrcode.QRCode(
         version=None,
         error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -195,6 +194,82 @@ def create_receipt_qr(receipt):
     qr_buffer = BytesIO()
     qr_image.save(qr_buffer, format="PNG")
     return qr_buffer.getvalue()
+
+
+def format_receipt_document(receipt):
+    """產生與紙本收據資料相同、但不含地址的可保存文字內容"""
+    return "\n".join(
+        [
+            "⛩️ 龍天宮 收執聯／存根聯",
+            f"開立時間：{receipt['開立時間']}",
+            f"收據編號：{receipt['收據編號']}",
+            f"信徒姓名：{receipt['姓名']}",
+            f"辦理項目：{receipt['辦理項目']}",
+            f"收到金額：NT$ {float(receipt['收到金額']):,.0f}",
+            f"備註：{receipt['備註'] or '無'}",
+            "經手人/蓋章： ______________",
+            "龍天宮管理委員會 敬啓",
+        ]
+    )
+
+
+def create_receipt_jpg(qr_bytes):
+    """將 QR 圖片轉成可下載的 JPEG"""
+    with Image.open(BytesIO(qr_bytes)) as qr_image:
+        jpg_buffer = BytesIO()
+        qr_image.convert("RGB").save(jpg_buffer, format="JPEG", quality=95)
+    return jpg_buffer.getvalue()
+
+
+def create_receipt_pdf(receipt_text, qr_bytes):
+    """製作含收據文字及 QR code、不含地址的 A5 PDF"""
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    pdf_buffer = BytesIO()
+    page_width, page_height = A5
+    pdf = canvas.Canvas(pdf_buffer, pagesize=A5)
+    margin = 36
+    qr_size = 104
+    text_x = margin
+    text_y = page_height - margin - qr_size - 32
+
+    pdf.setFont("STSong-Light", 16)
+    pdf.drawCentredString(page_width / 2, page_height - margin, "龍天宮 收執聯／存根聯")
+    pdf.drawImage(
+        ImageReader(BytesIO(qr_bytes)),
+        page_width - margin - qr_size,
+        page_height - margin - qr_size - 12,
+        width=qr_size,
+        height=qr_size,
+        preserveAspectRatio=True,
+        mask="auto",
+    )
+
+    pdf.setFont("STSong-Light", 10)
+    max_width = page_width - margin * 2
+    for line in receipt_text.splitlines()[1:]:
+        wrapped_lines = []
+        current_line = ""
+        for character in line:
+            candidate = current_line + character
+            if current_line and pdfmetrics.stringWidth(
+                candidate, "STSong-Light", 10
+            ) > max_width:
+                wrapped_lines.append(current_line)
+                current_line = character
+            else:
+                current_line = candidate
+        wrapped_lines.append(current_line)
+
+        for wrapped_line in wrapped_lines:
+            if text_y < margin + 20:
+                pdf.showPage()
+                pdf.setFont("STSong-Light", 10)
+                text_y = page_height - margin
+            pdf.drawString(text_x, text_y, wrapped_line)
+            text_y -= 18
+
+    pdf.save()
+    return pdf_buffer.getvalue()
 
 
 # -----------------------------------------------------------------------------
@@ -425,13 +500,16 @@ elif menu_option == "二、各類收據開立":
                 if sub_option:
                     full_option += f" ({sub_option})"
 
+                issued_at = datetime.datetime.now()
+                opened_at = issued_at.strftime("%Y-%m-%d %H:%M:%S")
                 receipt_draft = {
                     "收據編號": (
-                        "RCPT-"
-                        + datetime.datetime.now().strftime("%Y%m%d")
+                        "LTG-"
+                        + issued_at.strftime("%Y%m%d")
                         + "-"
-                        + uuid.uuid4().hex[:12].upper()
+                        + str(secrets.randbelow(90000) + 10000)
                     ),
+                    "開立時間": opened_at,
                     "姓名": r_name.strip(),
                     "地址": r_address.strip(),
                     "辦理項目": full_option,
@@ -452,6 +530,7 @@ elif menu_option == "二、各類收據開立":
 
         receipt = st.session_state.get("active_receipt")
         if receipt:
+            receipt_text = format_receipt_document(receipt)
             receipt_id = str(receipt["收據編號"])
             receipt_name = str(receipt["姓名"])
             receipt_amount = float(receipt["收到金額"])
@@ -466,8 +545,30 @@ elif menu_option == "二、各類收據開立":
 
             st.image(
                 qr_bytes,
-                caption="收據 QR code（含編號、姓名、金額、備註）",
+                caption="收據 QR code（與收執聯內容相同，不含地址）",
                 width=160,
+            )
+            download_columns = st.columns(3)
+            download_columns[0].download_button(
+                "下載收據文字檔",
+                data=receipt_text,
+                file_name=f"{receipt_id}.txt",
+                mime="text/plain; charset=utf-8",
+                key=f"download_receipt_text_{receipt_id}",
+            )
+            download_columns[1].download_button(
+                "下載 QR 碼 JPG",
+                data=create_receipt_jpg(qr_bytes),
+                file_name=f"{receipt_id}-QR.jpg",
+                mime="image/jpeg",
+                key=f"download_receipt_jpg_{receipt_id}",
+            )
+            download_columns[2].download_button(
+                "下載收據 PDF",
+                data=create_receipt_pdf(receipt_text, qr_bytes),
+                file_name=f"{receipt_id}.pdf",
+                mime="application/pdf",
+                key=f"download_receipt_pdf_{receipt_id}",
             )
 
             escaped_id = html.escape(receipt_id)
