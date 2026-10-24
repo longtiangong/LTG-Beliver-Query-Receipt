@@ -208,7 +208,7 @@ def format_receipt_document(receipt):
             f"收到金額：NT$ {float(receipt['收到金額']):,.0f}",
             f"備註：{receipt['備註'] or '無'}",
             "經手人/蓋章： ______________",
-            "龍天宮管理委員會 敬啓",
+            "關防章：龍天宮管委會",
         ]
     )
 
@@ -582,6 +582,7 @@ elif menu_option == "二、各類收據開立":
             )
 
             # * 1 A5 直式收執聯／存根聯上下排列，中間以虛線裁切
+            # * 3 收執聯與存根聯右下角加印「龍天宮管委會」關防章
             receipt_details = f"""
                 <div class="copy-content">
                     <div>
@@ -597,7 +598,7 @@ elif menu_option == "二、各類收據開立":
                 </div>
                 <div class="signature">
                     <span><b>經手人/蓋章：</b> ______________</span>
-                    <span class="temple">龍天宮管理委員會 敬啓</span>
+                    <span class="seal">龍天宮<br>管委會</span>
                 </div>
             """
 
@@ -617,7 +618,8 @@ elif menu_option == "二、各類收據開立":
                     }}
                     .receipt-copy {{
                         box-sizing: border-box;
-                        padding: 12px 16px;
+                        position: relative;
+                        padding: 12px 16px 76px;
                         border: 1px solid #8B0000;
                         background: #FFFDF0;
                     }}
@@ -655,13 +657,29 @@ elif menu_option == "二、各類收據開立":
                     .receipt-copy .signature {{
                         display: flex;
                         justify-content: space-between;
+                        align-items: flex-end;
                         gap: 12px;
-                        margin-top: 8px;
+                        position: absolute;
+                        right: 16px;
+                        bottom: 10px;
+                        left: 16px;
                         font-size: 0.78em;
                     }}
-                    .receipt-copy .temple {{
-                        color: #8B0000;
+                    .receipt-copy .seal {{
+                        box-sizing: border-box;
+                        display: flex;
+                        width: 68px;
+                        height: 58px;
+                        align-items: center;
+                        justify-content: center;
+                        border: 3px double #B22222;
+                        border-radius: 50%;
+                        color: #B22222;
+                        font-size: 12px;
                         font-weight: bold;
+                        line-height: 1.2;
+                        text-align: center;
+                        transform: rotate(-8deg);
                     }}
                     .cut-line {{
                         border-top: 2px dashed #8B0000;
@@ -694,9 +712,18 @@ elif menu_option == "二、各類收據開立":
                             gap: 4px;
                         }}
                         .receipt-copy {{
-                            padding: 8px 12px;
+                            padding: 8px 12px 68px;
                             print-color-adjust: exact;
                             -webkit-print-color-adjust: exact;
+                        }}
+                        .receipt-copy .signature {{
+                            right: 12px;
+                            left: 12px;
+                            bottom: 8px;
+                        }}
+                        .receipt-copy .seal {{
+                            width: 62px;
+                            height: 52px;
                         }}
                         .qr-code {{
                             width: 62px;
