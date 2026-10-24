@@ -36,18 +36,32 @@ GAS_URL = st.secrets.get("GAS_URL", "")
 def fetch_believer_data():
     """從 Google Sheet 抓取信徒資料"""
     if not GAS_URL:
-        return pd.DataFrame()
+        st.error("未設定 GAS_URL，無法讀取 Google Sheet。")
+        return None
     try:
         res = requests.get(GAS_URL, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            return pd.DataFrame(data)
-        else:
-            st.error(f"無法讀取 Google Sheet 資料，HTTP 狀態碼：{res.status_code}")
-            return pd.DataFrame()
-    except Exception as e:
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
         st.error(f"讀取 Google Sheet 發生錯誤: {e}")
-        return pd.DataFrame()
+        return None
+
+    try:
+        data = res.json()
+    except requests.exceptions.JSONDecodeError:
+        st.error(
+            "Google Apps Script 回應不是有效的 JSON。"
+            "請檢查 doGet 是否執行成功，並確認 Web App 已部署最新版本。"
+        )
+        return None
+
+    if isinstance(data, dict) and data.get("status") == "error":
+        st.error(f"Google Apps Script 讀取失敗：{data.get('message', '未知錯誤')}")
+        return None
+
+    if not isinstance(data, list):
+        st.error("Google Apps Script 回傳格式錯誤：預期為資料列清單。")
+        return None
+    return pd.DataFrame(data)
 
 
 def save_believer_data(payload):
@@ -93,6 +107,8 @@ if menu_option == "一、信徒資料查詢":
 
     if search_name:
         df = fetch_believer_data()
+        if df is None:
+            st.stop()
 
         # 第二重密碼檢核（保護調閱資料安全）
         if not st.session_state.data_unlocked:
