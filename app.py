@@ -233,8 +233,42 @@ elif menu_option == "二、各類收據開立":
 
     with col_l:
         st.subheader("1. 輸入收據資料")
-        r_name = st.text_input("信徒姓名")
-        r_address = st.text_input("地址")
+        r_name = st.text_input("信徒姓名", key="receipt_name")
+
+        if r_name != st.session_state.get("_receipt_lookup_name"):
+            st.session_state["receipt_address"] = ""
+            if r_name.strip():
+                believer_df = fetch_believer_data()
+                if (
+                    believer_df is not None
+                    and "姓名" in believer_df.columns
+                ):
+                    matches = believer_df[
+                        believer_df["姓名"].astype(str).str.strip()
+                        == r_name.strip()
+                    ]
+                    if not matches.empty:
+                        address_column = (
+                            "住址"
+                            if "住址" in matches.columns
+                            else "地址"
+                        )
+                        if address_column in matches.columns:
+                            address_value = matches.iloc[0][address_column]
+                            if pd.isna(address_value):
+                                address_value = ""
+                            st.session_state["receipt_address"] = str(
+                                address_value
+                            )
+                        if len(matches) > 1:
+                            st.info(
+                                f"找到 {len(matches)} 筆同名資料，已帶出第一筆住址；"
+                                "請確認或手動修改。"
+                            )
+            st.session_state["_receipt_lookup_name"] = r_name
+
+        r_address = st.text_input("地址", key="receipt_address")
+        st.caption("輸入完整姓名並找到資料後，地址會自動帶出，仍可手動修改。")
 
         receipt_type = st.selectbox(
             "選擇種類選項",
