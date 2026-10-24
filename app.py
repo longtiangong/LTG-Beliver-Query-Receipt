@@ -271,7 +271,7 @@ elif menu_option == "二、各類收據開立":
         st.caption("輸入完整姓名並找到資料後，地址會自動帶出，仍可手動修改。")
 
         receipt_type = st.selectbox(
-            "選擇種類選項",
+            "選項",
             [
                 "1. 祭改",
                 "2. 光明燈",
