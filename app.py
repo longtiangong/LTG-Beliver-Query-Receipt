@@ -668,18 +668,19 @@ elif menu_option == "二、各類收據開立":
                     .receipt-copy .seal {{
                         box-sizing: border-box;
                         display: flex;
-                        width: 68px;
-                        height: 58px;
+                        width: 64px;
+                        height: 64px;
                         align-items: center;
                         justify-content: center;
                         border: 3px double #B22222;
-                        border-radius: 50%;
+                        border-radius: 2px;
+                        box-shadow: inset 0 0 0 2px #FFFDF0, inset 0 0 0 3px #B22222;
                         color: #B22222;
-                        font-size: 12px;
+                        font-size: 13px;
                         font-weight: bold;
                         line-height: 1.2;
                         text-align: center;
-                        transform: rotate(-8deg);
+                        transform: rotate(-5deg);
                     }}
                     .cut-line {{
                         border-top: 2px dashed #8B0000;
@@ -722,8 +723,8 @@ elif menu_option == "二、各類收據開立":
                             bottom: 8px;
                         }}
                         .receipt-copy .seal {{
-                            width: 62px;
-                            height: 52px;
+                            width: 58px;
+                            height: 58px;
                         }}
                         .qr-code {{
                             width: 62px;
