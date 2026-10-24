@@ -178,44 +178,6 @@ def save_receipt_record(receipt, pdf_bytes):
     return data["record"]
 
 
-def save_receipt_qr(receipt_id, qr_bytes):
-    """將指向收執聯 PDF 的 QR 圖片存入 Google Sheet"""
-    if not GAS_URL or not GAS_API_KEY:
-        st.error("未設定 GAS_URL 或 GAS_API_KEY，無法儲存收據 QR 碼。")
-        return False
-    try:
-        response = requests.post(
-            GAS_URL,
-            json={
-                "action": "attachReceiptQr",
-                "apiKey": GAS_API_KEY,
-                "receiptId": receipt_id,
-                "qrCodeBase64": base64.b64encode(qr_bytes).decode("ascii"),
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.RequestException as error:
-        st.error(f"儲存收據 QR 碼發生錯誤：{error}")
-        return False
-    except requests.exceptions.JSONDecodeError:
-        st.error("儲存收據 QR 碼失敗：Google Apps Script 回應不是有效的 JSON。")
-        return False
-
-    if not isinstance(data, dict) or data.get("status") != "success":
-        message = (
-            data.get("message", "回傳格式錯誤")
-            if isinstance(data, dict)
-            else "回傳格式錯誤"
-        )
-        st.error(f"儲存收據 QR 碼失敗：{message}")
-        return False
-
-    st.cache_data.clear()
-    return True
-
-
 def create_receipt_qr(pdf_url):
     """在本機產生直接連到私有收執聯 PDF 的 QR PNG"""
     qr = qrcode.QRCode(
@@ -554,16 +516,11 @@ elif menu_option == "二、各類收據開立":
                 receipt = save_receipt_record(receipt_draft, pdf_bytes)
                 if receipt:
                     qr_bytes = create_receipt_qr(receipt["PDF連結"])
-                    qr_saved = save_receipt_qr(
-                        receipt["收據編號"], qr_bytes
-                    )
                     st.session_state["active_receipt"] = receipt
                     st.session_state["active_receipt_qr"] = qr_bytes
                     st.success(
                         f"收據 {receipt['收據編號']} 已建立 PDF 並加入收據總表。"
                     )
-                    if qr_saved:
-                        st.success("QR code 已更新為收執聯 PDF 連結。")
         receipt = st.session_state.get("active_receipt")
         if receipt:
             receipt_id = str(receipt["收據編號"])
@@ -784,7 +741,6 @@ elif menu_option == "二、各類收據開立":
                 "收到金額",
                 "備註",
                 "PDF連結",
-                "QR碼",
             ]
             available_columns = [
                 column
