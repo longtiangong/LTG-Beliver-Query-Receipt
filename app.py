@@ -72,9 +72,10 @@ def save_believer_data(payload):
         return False
     try:
         res = requests.post(GAS_URL, json=payload, timeout=10)
-        if res.status_code == 200 and res.json().get("status") == "success":
+        response = res.json()
+        if res.status_code == 200 and response.get("status") == "success":
             st.cache_data.clear()  # 清除快取以刷新資料
-            return True
+            return response
         else:
             st.error(f"寫入失敗：{res.text}")
             return False
@@ -182,7 +183,6 @@ if menu_option == "一、信徒資料查詢":
                 col1, col2 = st.columns(2)
 
                 name_input = col1.text_input("姓名", value=search_name)
-                believer_number = col2.text_input("編號")
 
                 birth_date = col1.text_input(
                     "生辰年月日", placeholder="例：農曆68年3月15日 或 1979-04-11"
@@ -211,14 +211,16 @@ if menu_option == "一、信徒資料查詢":
                             "生辰年月日": birth_date,
                             "生時": birth_time,
                             "住址": address,
-                            "編號": believer_number,
                             "手機": phone,
                             "2026丁/口": dinkou_2026,
                             "2026光明燈": guangming_2026,
                             "2026太歲": taisui_2026,
                         }
-                        if save_believer_data(payload):
-                            st.success("成功新增資料至 Google Sheet！")
+                        result = save_believer_data(payload)
+                        if result:
+                            st.success(
+                                f"成功新增資料至 Google Sheet！編號：{result.get('number', '已自動編號')}"
+                            )
                             st.rerun()
 
 # -----------------------------------------------------------------------------
