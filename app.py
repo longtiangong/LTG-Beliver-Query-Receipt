@@ -1,6 +1,7 @@
 import base64
 import datetime
 import html
+import uuid
 from io import BytesIO
 
 import qrcode
@@ -144,7 +145,7 @@ def save_receipt_record(receipt):
                 "apiKey": GAS_API_KEY,
                 "receipt": receipt,
             },
-            timeout=10,
+            timeout=30,
         )
         res.raise_for_status()
         data = res.json()
@@ -170,6 +171,30 @@ def save_receipt_record(receipt):
 
     st.cache_data.clear()
     return data["record"]
+
+
+def create_receipt_qr(receipt):
+    """在本機產生包含收據編號、姓名、金額和備註的 QR PNG"""
+    qr_payload = "\n".join(
+        [
+            f"收據編號：{receipt['收據編號']}",
+            f"姓名：{receipt['姓名']}",
+            f"收到金額：{float(receipt['收到金額']):,.0f} 元",
+            f"備註：{receipt['備註'] or '無'}",
+        ]
+    )
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=4,
+        border=2,
+    )
+    qr.add_data(qr_payload)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    qr_buffer = BytesIO()
+    qr_image.save(qr_buffer, format="PNG")
+    return qr_buffer.getvalue()
 
 
 # -----------------------------------------------------------------------------
@@ -400,17 +425,27 @@ elif menu_option == "二、各類收據開立":
                 if sub_option:
                     full_option += f" ({sub_option})"
 
-                receipt = save_receipt_record(
-                    {
-                        "姓名": r_name.strip(),
-                        "地址": r_address.strip(),
-                        "辦理項目": full_option,
-                        "收到金額": r_amount,
-                        "備註": r_note.strip(),
-                    }
-                )
+                receipt_draft = {
+                    "收據編號": (
+                        "RCPT-"
+                        + datetime.datetime.now().strftime("%Y%m%d")
+                        + "-"
+                        + uuid.uuid4().hex[:12].upper()
+                    ),
+                    "姓名": r_name.strip(),
+                    "地址": r_address.strip(),
+                    "辦理項目": full_option,
+                    "收到金額": r_amount,
+                    "備註": r_note.strip(),
+                }
+                qr_bytes = create_receipt_qr(receipt_draft)
+                receipt_draft["qrCodeBase64"] = base64.b64encode(
+                    qr_bytes
+                ).decode("ascii")
+                receipt = save_receipt_record(receipt_draft)
                 if receipt:
                     st.session_state["active_receipt"] = receipt
+                    st.session_state["active_receipt_qr"] = qr_bytes
                     st.success(
                         f"收據 {receipt['收據編號']} 已加入收據總表。"
                     )
@@ -421,26 +456,9 @@ elif menu_option == "二、各類收據開立":
             receipt_name = str(receipt["姓名"])
             receipt_amount = float(receipt["收到金額"])
             receipt_note = str(receipt["備註"])
-            qr_payload = "\n".join(
-                [
-                    f"收據編號：{receipt_id}",
-                    f"姓名：{receipt_name}",
-                    f"收到金額：{receipt_amount:,.0f} 元",
-                    f"備註：{receipt_note or '無'}",
-                ]
-            )
-            qr = qrcode.QRCode(
-                version=None,
-                error_correction=qrcode.constants.ERROR_CORRECT_M,
-                box_size=4,
-                border=2,
-            )
-            qr.add_data(qr_payload)
-            qr.make(fit=True)
-            qr_image = qr.make_image(fill_color="black", back_color="white")
-            qr_buffer = BytesIO()
-            qr_image.save(qr_buffer, format="PNG")
-            qr_bytes = qr_buffer.getvalue()
+            qr_bytes = st.session_state.get("active_receipt_qr")
+            if not qr_bytes:
+                qr_bytes = create_receipt_qr(receipt)
             qr_data_uri = (
                 "data:image/png;base64,"
                 + base64.b64encode(qr_bytes).decode("ascii")
@@ -621,6 +639,7 @@ elif menu_option == "二、各類收據開立":
                 "辦理項目",
                 "收到金額",
                 "備註",
+                "QR碼",
             ]
             available_columns = [
                 column
