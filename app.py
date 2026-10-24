@@ -316,6 +316,19 @@ elif menu_option == "二、各類收據開立":
                 escaped_option = html.escape(full_option)
                 escaped_note = html.escape(r_note or "無").replace("\n", "<br>")
 
+                # * 1 A5 直式收執聯／存根聯上下排列，中間以虛線裁切
+                receipt_details = f"""
+                    <p class="time"><b>開立時間：</b>{current_time}</p>
+                    <p><b>信徒姓名：</b>{escaped_name}</p>
+                    <p><b>住址：</b>{escaped_address}</p>
+                    <p><b>辦理項目：</b><span class="option">{escaped_option}</span></p>
+                    <p><b>備註：</b>{escaped_note}</p>
+                    <div class="signature">
+                        <span><b>經手人/蓋章：</b> ______________</span>
+                        <span class="temple">龍天宮管理委員會 敬啓</span>
+                    </div>
+                """
+
                 st.components.v1.html(
                     f"""
                     <style>
@@ -324,41 +337,55 @@ elif menu_option == "二、各類收據開立":
                             font-family: sans-serif;
                             color: #333;
                         }}
-                        .receipt {{
+                        .copies {{
                             box-sizing: border-box;
-                            border: 2px dashed #8B0000;
-                            padding: 24px;
-                            border-radius: 10px;
+                            display: grid;
+                            grid-template-rows: 1fr auto 1fr;
+                            gap: 8px;
+                        }}
+                        .receipt-copy {{
+                            box-sizing: border-box;
+                            padding: 12px 16px;
+                            border: 1px solid #8B0000;
                             background: #FFFDF0;
                         }}
-                        .receipt h2 {{
-                            margin: 0 0 8px;
+                        .receipt-copy h2 {{
+                            margin: 0 0 4px;
                             text-align: center;
                             color: #8B0000;
+                            font-size: 1.25em;
                         }}
-                        .receipt p {{
-                            font-size: 1.1em;
-                            line-height: 1.6;
+                        .receipt-copy p {{
+                            margin: 5px 0;
+                            font-size: 0.95em;
+                            line-height: 1.35;
                             overflow-wrap: anywhere;
                         }}
-                        .receipt .time {{
-                            text-align: right;
+                        .receipt-copy .time {{
                             color: #666;
-                            font-size: 0.9em;
+                            font-size: 0.8em;
                         }}
-                        .receipt .option {{
+                        .receipt-copy .option {{
                             color: #D9534F;
                             font-weight: bold;
                         }}
-                        .receipt .signature {{
+                        .receipt-copy .signature {{
                             display: flex;
                             justify-content: space-between;
                             gap: 16px;
-                            margin-top: 24px;
+                            margin-top: 12px;
+                            font-size: 0.85em;
                         }}
-                        .receipt .temple {{
+                        .receipt-copy .temple {{
                             color: #8B0000;
                             font-weight: bold;
+                        }}
+                        .cut-line {{
+                            border-top: 2px dashed #8B0000;
+                            color: #8B0000;
+                            font-size: 0.75em;
+                            text-align: center;
+                            line-height: 1;
                         }}
                         .print-button {{
                             margin-top: 12px;
@@ -373,33 +400,39 @@ elif menu_option == "二、各類收據開立":
                         @media print {{
                             @page {{
                                 size: A5 portrait;
-                                margin: 12mm;
+                                margin: 8mm;
+                            }}
+                            html, body {{
+                                width: 100%;
+                                height: 194mm;
+                            }}
+                            .copies {{
+                                height: 194mm;
+                                gap: 4px;
+                            }}
+                            .receipt-copy {{
+                                padding: 8px 12px;
+                                print-color-adjust: exact;
+                                -webkit-print-color-adjust: exact;
                             }}
                             .print-button {{
                                 display: none;
                             }}
-                            .receipt {{
-                                border-radius: 0;
-                                print-color-adjust: exact;
-                                -webkit-print-color-adjust: exact;
-                            }}
                         }}
                     </style>
-                    <div class="receipt">
-                        <h2>⛩️ 龍天宮 惠存收執聯</h2>
-                        <p class="time"><b>開立時間：</b>{current_time}</p>
-                        <hr style="border: 1px solid #8B0000;">
-                        <p><b>信徒姓名：</b> {escaped_name}</p>
-                        <p><b>住址：</b> {escaped_address}</p>
-                        <p><b>辦理項目（選項）：</b> <span class="option">{escaped_option}</span></p>
-                        <p><b>備註：</b> {escaped_note}</p>
-                        <div class="signature">
-                            <span><b>經手人/蓋章：</b> __________________</span>
-                            <span class="temple">龍天宮管理委員會 敬啓</span>
-                        </div>
+                    <div class="copies">
+                        <section class="receipt-copy">
+                            <h2>⛩️ 龍天宮 收執聯</h2>
+                            {receipt_details}
+                        </section>
+                        <div class="cut-line">沿虛線裁切</div>
+                        <section class="receipt-copy">
+                            <h2>⛩️ 龍天宮 存根聯</h2>
+                            {receipt_details}
+                        </section>
                     </div>
-                    <button class="print-button" onclick="window.print()">🖨️ 列印收執聯</button>
+                    <button class="print-button" onclick="window.print()">🖨️ 列印 A5 上下聯</button>
                     """,
-                    height=430,
+                    height=660,
                     scrolling=False,
                 )
