@@ -1,4 +1,5 @@
 import datetime
+import html
 import requests
 import pandas as pd
 import streamlit as st
@@ -141,12 +142,12 @@ if menu_option == "一、信徒資料查詢":
             # 定義主要欄位順序以確保顯示穩定
             expected_cols = [
                 "姓名",
-                "稱謂",
                 "生辰年月日",
-                "時辰",
-                "地址",
+                "生時",
+                "住址",
+                "編號",
                 "手機",
-                "2026丁口",
+                "2026丁/口",
                 "2026光明燈",
                 "2026太歲",
             ]
@@ -158,18 +159,18 @@ if menu_option == "一、信徒資料查詢":
 
             for idx, row in matched_df.iterrows():
                 with st.expander(
-                    f"👤 信徒：{row.get('姓名', '')} ({row.get('稱謂', '信士/女')}) - 手機：{row.get('手機', '無')}",
+                    f"👤 信徒：{row.get('姓名', '')} - 手機：{row.get('手機', '無')}",
                     expanded=True,
                 ):
                     c1, c2, c3 = st.columns(3)
-                    c1.markdown(f"**稱謂：** {row.get('稱謂', '')}")
                     c1.markdown(f"**生辰年月日：** {row.get('生辰年月日', '')}")
-                    c1.markdown(f"**時辰：** {row.get('時辰', '')}")
+                    c1.markdown(f"**生時：** {row.get('生時', '')}")
 
                     c2.markdown(f"**手機：** {row.get('手機', '')}")
-                    c2.markdown(f"**地址：** {row.get('地址', '')}")
+                    c2.markdown(f"**住址：** {row.get('住址', '')}")
+                    c2.markdown(f"**編號：** {row.get('編號', '')}")
 
-                    c3.markdown(f"**2026丁口：** {row.get('2026丁口', '')}")
+                    c3.markdown(f"**2026丁/口：** {row.get('2026丁/口', '')}")
                     c3.markdown(f"**2026光明燈：** {row.get('2026光明燈', '')}")
                     c3.markdown(f"**2026太歲：** {row.get('2026太歲', '')}")
 
@@ -181,19 +182,21 @@ if menu_option == "一、信徒資料查詢":
                 col1, col2 = st.columns(2)
 
                 name_input = col1.text_input("姓名", value=search_name)
-                gender_title = col2.selectbox(
-                    "稱謂", ["信士", "信女", "乾造", "坤造"]
+                believer_number = col2.text_input("編號")
+
+                birth_date = col1.text_input(
+                    "生辰年月日", placeholder="例：農曆68年3月15日 或 1979-04-11"
+                )
+                birth_time = col2.text_input(
+                    "生時", placeholder="例：吉時、子時(23-01)"
                 )
 
-                birth_date = col1.text_input("生辰年月日", placeholder="例：農曆68年3月15日 或 1979-04-11")
-                birth_time = col2.text_input("時辰", placeholder="例：吉時、子時(23-01)")
-
                 phone = col1.text_input("手機")
-                address = col2.text_input("地址")
+                address = col2.text_input("住址")
 
                 st.markdown("---")
                 col3, col4, col5 = st.columns(3)
-                dinkou_2026 = col3.text_input("2026丁口")
+                dinkou_2026 = col3.text_input("2026丁/口")
                 guangming_2026 = col4.text_input("2026光明燈")
                 taisui_2026 = col5.text_input("2026太歲")
 
@@ -205,12 +208,12 @@ if menu_option == "一、信徒資料查詢":
                     else:
                         payload = {
                             "姓名": name_input,
-                            "稱謂": gender_title,
                             "生辰年月日": birth_date,
-                            "時辰": birth_time,
-                            "地址": address,
+                            "生時": birth_time,
+                            "住址": address,
+                            "編號": believer_number,
                             "手機": phone,
-                            "2026丁口": dinkou_2026,
+                            "2026丁/口": dinkou_2026,
                             "2026光明燈": guangming_2026,
                             "2026太歲": taisui_2026,
                         }
@@ -272,23 +275,95 @@ elif menu_option == "二、各類收據開立":
                 if sub_option:
                     full_option += f" ({sub_option})"
 
-                # 呈現樣式收執聯
-                st.markdown(
+                escaped_name = html.escape(r_name)
+                escaped_address = html.escape(r_address or "無")
+                escaped_option = html.escape(full_option)
+                escaped_note = html.escape(r_note or "無").replace("\n", "<br>")
+
+                st.components.v1.html(
                     f"""
-                <div style="border: 2px dashed #8B0000; padding: 25px; border-radius: 10px; background-color: #FFFDF0; color: #333;">
-                    <h2 style="text-align: center; color: #8B0000; margin-bottom: 5px;">⛩️ 龍天宮 惠存收執聯</h2>
-                    <p style="text-align: right; color: #666; font-size: 0.9em;"><b>開立時間：</b>{current_time}</p>
-                    <hr style="border: 1px solid #8B0000;">
-                    <p style="font-size: 1.1em;"><b>信徒姓名：</b> {r_name}</p>
-                    <p style="font-size: 1.1em;"><b>住址：</b> {r_address if r_address else '無'}</p>
-                    <p style="font-size: 1.1em;"><b>辦理項目（選項）：</b> <span style="color: #D9534F; font-weight: bold;">{full_option}</span></p>
-                    <p style="font-size: 1.1em;"><b>備註：</b> {r_note if r_note else '無'}</p>
-                    <br>
-                    <div style="display: flex; justify-content: space-between; margin-top: 20px;">
-                        <span><b>經手人/蓋章：</b> __________________</span>
-                        <span style="color: #8B0000; font-weight: bold;">龍天宮 敬啓</span>
+                    <style>
+                        body {{
+                            margin: 0;
+                            font-family: sans-serif;
+                            color: #333;
+                        }}
+                        .receipt {{
+                            box-sizing: border-box;
+                            border: 2px dashed #8B0000;
+                            padding: 24px;
+                            border-radius: 10px;
+                            background: #FFFDF0;
+                        }}
+                        .receipt h2 {{
+                            margin: 0 0 8px;
+                            text-align: center;
+                            color: #8B0000;
+                        }}
+                        .receipt p {{
+                            font-size: 1.1em;
+                            line-height: 1.6;
+                            overflow-wrap: anywhere;
+                        }}
+                        .receipt .time {{
+                            text-align: right;
+                            color: #666;
+                            font-size: 0.9em;
+                        }}
+                        .receipt .option {{
+                            color: #D9534F;
+                            font-weight: bold;
+                        }}
+                        .receipt .signature {{
+                            display: flex;
+                            justify-content: space-between;
+                            gap: 16px;
+                            margin-top: 24px;
+                        }}
+                        .receipt .temple {{
+                            color: #8B0000;
+                            font-weight: bold;
+                        }}
+                        .print-button {{
+                            margin-top: 12px;
+                            padding: 8px 16px;
+                            border: 0;
+                            border-radius: 6px;
+                            background: #8B0000;
+                            color: white;
+                            font-size: 1em;
+                            cursor: pointer;
+                        }}
+                        @media print {{
+                            @page {{
+                                size: A5 portrait;
+                                margin: 12mm;
+                            }}
+                            .print-button {{
+                                display: none;
+                            }}
+                            .receipt {{
+                                border-radius: 0;
+                                print-color-adjust: exact;
+                                -webkit-print-color-adjust: exact;
+                            }}
+                        }}
+                    </style>
+                    <div class="receipt">
+                        <h2>⛩️ 龍天宮 惠存收執聯</h2>
+                        <p class="time"><b>開立時間：</b>{current_time}</p>
+                        <hr style="border: 1px solid #8B0000;">
+                        <p><b>信徒姓名：</b> {escaped_name}</p>
+                        <p><b>住址：</b> {escaped_address}</p>
+                        <p><b>辦理項目（選項）：</b> <span class="option">{escaped_option}</span></p>
+                        <p><b>備註：</b> {escaped_note}</p>
+                        <div class="signature">
+                            <span><b>經手人/蓋章：</b> __________________</span>
+                            <span class="temple">龍天宮 敬啓</span>
+                        </div>
                     </div>
-                </div>
-                """,
-                    unsafe_allow_html=True,
+                    <button class="print-button" onclick="window.print()">🖨️ 列印收執聯</button>
+                    """,
+                    height=430,
+                    scrolling=False,
                 )
