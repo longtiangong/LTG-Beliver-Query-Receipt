@@ -8,7 +8,6 @@ import qrcode
 import requests
 import pandas as pd
 import streamlit as st
-from PIL import Image
 from reportlab.lib.pagesizes import A5
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -233,40 +232,14 @@ def create_receipt_qr(pdf_url):
     return qr_buffer.getvalue()
 
 
-def format_receipt_document(receipt):
-    """產生與紙本收據資料相同、但不含地址的可保存文字內容"""
-    return "\n".join(
-        [
-            "⛩️ 龍天宮 收執聯／存根聯",
-            f"開立時間：{receipt['開立時間']}",
-            f"收據編號：{receipt['收據編號']}",
-            f"信徒姓名：{receipt['姓名']}",
-            f"辦理項目：{receipt['辦理項目']}",
-            f"收到金額：NT$ {float(receipt['收到金額']):,.0f}",
-            f"備註：{receipt['備註'] or '無'}",
-            "經手人/蓋章： ______________",
-            "關防章：龍天宮管委會",
-        ]
-    )
-
-
-def create_receipt_jpg(qr_bytes):
-    """將 QR 圖片轉成可下載的 JPEG"""
-    with Image.open(BytesIO(qr_bytes)) as qr_image:
-        jpg_buffer = BytesIO()
-        qr_image.convert("RGB").save(jpg_buffer, format="JPEG", quality=95)
-    return jpg_buffer.getvalue()
-
-
 def create_receipt_pdf(receipt):
-    """製作與收執聯預覽相同的 A5 上下聯 PDF"""
+    """製作只包含收執聯的 A5 PDF"""
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     pdf_buffer = BytesIO()
     page_width, page_height = A5
     pdf = canvas.Canvas(pdf_buffer, pagesize=A5)
     margin = 24
-    cut_gap = 12
-    copy_height = (page_height - margin * 2 - cut_gap) / 2
+    copy_height = page_height - margin * 2
     fields = [
         ("開立時間", str(receipt["開立時間"])),
         ("收據編號", str(receipt["收據編號"])),
@@ -277,70 +250,56 @@ def create_receipt_pdf(receipt):
         ("備註", str(receipt.get("備註") or "無")),
     ]
 
-    for copy_index, copy_title in enumerate(["收執聯", "存根聯"]):
-        copy_top = page_height - margin - copy_index * (copy_height + cut_gap)
-        copy_bottom = copy_top - copy_height
-        pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
-        pdf.rect(
-            margin,
-            copy_bottom,
-            page_width - margin * 2,
-            copy_height,
-        )
-
-        pdf.setFillColorRGB(0.55, 0.0, 0.0)
-        pdf.setFont("STSong-Light", 16)
-        pdf.drawCentredString(
-            page_width / 2,
-            copy_top - 25,
-            "龍天宮 " + copy_title,
-        )
-
-        text_x = margin + 14
-        text_y = copy_top - 49
-        max_width = page_width - margin * 2 - 28
-        pdf.setFillColorRGB(0.15, 0.15, 0.15)
-        pdf.setFont("STSong-Light", 10)
-
-        for label, value in fields:
-            line = f"{label}：{value}"
-            wrapped_lines = []
-            current_line = ""
-            for character in line:
-                candidate = current_line + character
-                if current_line and pdfmetrics.stringWidth(
-                    candidate, "STSong-Light", 10
-                ) > max_width:
-                    wrapped_lines.append(current_line)
-                    current_line = character
-                else:
-                    current_line = candidate
-            wrapped_lines.append(current_line)
-
-            for wrapped_line in wrapped_lines:
-                pdf.drawString(text_x, text_y, wrapped_line)
-                text_y -= 14
-
-        signature_y = copy_bottom + 18
-        pdf.drawString(text_x, signature_y + 9, "經手人/蓋章：")
-        pdf.line(text_x + 64, signature_y + 7, text_x + 150, signature_y + 7)
-
-        seal_size = 58
-        seal_x = page_width - margin - 14 - seal_size
-        seal_y = copy_bottom + 12
-        pdf.setStrokeColorRGB(0.7, 0.08, 0.08)
-        pdf.setLineWidth(2)
-        pdf.rect(seal_x, seal_y, seal_size, seal_size)
-        pdf.setLineWidth(0.8)
-        pdf.rect(seal_x + 4, seal_y + 4, seal_size - 8, seal_size - 8)
-        pdf.setFillColorRGB(0.7, 0.08, 0.08)
-        pdf.setFont("STSong-Light", 11)
-        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 32, "龍天宮")
-        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 17, "管委會")
-
-    pdf.setDash(3, 2)
+    copy_top = page_height - margin
+    copy_bottom = copy_top - copy_height
     pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
-    pdf.line(margin, page_height / 2, page_width - margin, page_height / 2)
+    pdf.rect(margin, copy_bottom, page_width - margin * 2, copy_height)
+
+    pdf.setFillColorRGB(0.55, 0.0, 0.0)
+    pdf.setFont("STSong-Light", 16)
+    pdf.drawCentredString(page_width / 2, copy_top - 25, "龍天宮 收執聯")
+
+    text_x = margin + 14
+    text_y = copy_top - 49
+    max_width = page_width - margin * 2 - 28
+    pdf.setFillColorRGB(0.15, 0.15, 0.15)
+    pdf.setFont("STSong-Light", 10)
+
+    for label, value in fields:
+        line = f"{label}：{value}"
+        wrapped_lines = []
+        current_line = ""
+        for character in line:
+            candidate = current_line + character
+            if current_line and pdfmetrics.stringWidth(
+                candidate, "STSong-Light", 10
+            ) > max_width:
+                wrapped_lines.append(current_line)
+                current_line = character
+            else:
+                current_line = candidate
+        wrapped_lines.append(current_line)
+
+        for wrapped_line in wrapped_lines:
+            pdf.drawString(text_x, text_y, wrapped_line)
+            text_y -= 14
+
+    signature_y = copy_bottom + 18
+    pdf.drawString(text_x, signature_y + 9, "經手人/蓋章：")
+    pdf.line(text_x + 64, signature_y + 7, text_x + 150, signature_y + 7)
+
+    seal_size = 58
+    seal_x = page_width - margin - 14 - seal_size
+    seal_y = copy_bottom + 12
+    pdf.setStrokeColorRGB(0.7, 0.08, 0.08)
+    pdf.setLineWidth(2)
+    pdf.rect(seal_x, seal_y, seal_size, seal_size)
+    pdf.setLineWidth(0.8)
+    pdf.rect(seal_x + 4, seal_y + 4, seal_size - 8, seal_size - 8)
+    pdf.setFillColorRGB(0.7, 0.08, 0.08)
+    pdf.setFont("STSong-Light", 11)
+    pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 32, "龍天宮")
+    pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 17, "管委會")
 
     pdf.save()
     return pdf_buffer.getvalue()
@@ -599,16 +558,13 @@ elif menu_option == "二、各類收據開立":
                     )
                     st.session_state["active_receipt"] = receipt
                     st.session_state["active_receipt_qr"] = qr_bytes
-                    st.session_state["active_receipt_pdf"] = pdf_bytes
                     st.success(
                         f"收據 {receipt['收據編號']} 已建立 PDF 並加入收據總表。"
                     )
                     if qr_saved:
                         st.success("QR code 已更新為收執聯 PDF 連結。")
-
         receipt = st.session_state.get("active_receipt")
         if receipt:
-            receipt_text = format_receipt_document(receipt)
             receipt_id = str(receipt["收據編號"])
             receipt_name = str(receipt["姓名"])
             receipt_amount = float(receipt["收到金額"])
@@ -617,10 +573,6 @@ elif menu_option == "二、各類收據開立":
             if not qr_bytes:
                 qr_bytes = create_receipt_qr(receipt["PDF連結"])
                 st.session_state["active_receipt_qr"] = qr_bytes
-            pdf_bytes = st.session_state.get("active_receipt_pdf")
-            if not pdf_bytes:
-                pdf_bytes = create_receipt_pdf(receipt)
-                st.session_state["active_receipt_pdf"] = pdf_bytes
             qr_data_uri = (
                 "data:image/png;base64,"
                 + base64.b64encode(qr_bytes).decode("ascii")
@@ -632,28 +584,6 @@ elif menu_option == "二、各類收據開立":
                 width=160,
             )
             st.link_button("開啟收執聯 PDF", receipt["PDF連結"])
-            download_columns = st.columns(3)
-            download_columns[0].download_button(
-                "下載收據文字檔",
-                data=receipt_text,
-                file_name=f"{receipt_id}.txt",
-                mime="text/plain; charset=utf-8",
-                key=f"download_receipt_text_{receipt_id}",
-            )
-            download_columns[1].download_button(
-                "下載 QR 碼 JPG",
-                data=create_receipt_jpg(qr_bytes),
-                file_name=f"{receipt_id}-QR.jpg",
-                mime="image/jpeg",
-                key=f"download_receipt_jpg_{receipt_id}",
-            )
-            download_columns[2].download_button(
-                "下載收據 PDF",
-                data=pdf_bytes,
-                file_name=f"{receipt_id}.pdf",
-                mime="application/pdf",
-                key=f"download_receipt_pdf_{receipt_id}",
-            )
 
             escaped_id = html.escape(receipt_id)
             escaped_time = html.escape(str(receipt["開立時間"]))
