@@ -585,12 +585,13 @@ elif menu_option == "二、各類收據開立":
                     .copies {{
                         box-sizing: border-box;
                         display: grid;
-                        grid-template-rows: 1fr auto 1fr;
+                        grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
                         gap: 8px;
                     }}
                     .receipt-copy {{
                         box-sizing: border-box;
                         position: relative;
+                        min-height: 0;
                         padding: 12px 16px 76px;
                         border: 1px solid #8B0000;
                         background: #FFFDF0;
@@ -678,16 +679,20 @@ elif menu_option == "二、各類收據開立":
                         }}
                         html, body {{
                             width: 100%;
-                            height: 194mm;
+                            height: 190mm;
                         }}
                         .copies {{
-                            height: 194mm;
+                            height: 190mm;
                             gap: 4px;
+                            break-inside: avoid;
+                            page-break-inside: avoid;
                         }}
                         .receipt-copy {{
                             padding: 8px 12px 68px;
                             print-color-adjust: exact;
                             -webkit-print-color-adjust: exact;
+                            break-inside: avoid;
+                            page-break-inside: avoid;
                         }}
                         .receipt-copy .signature {{
                             right: 12px;
