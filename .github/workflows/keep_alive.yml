@@ -1,0 +1,18 @@
+name: Streamlit Keep Alive
+
+on:
+  schedule:
+    # 這裡設定的時間是 UTC 時間（世界協調時間）
+    # 範例設定為每隔 6 小時執行一次 (在每 6 小時的第 0 分鐘執行)
+    - cron: '0 */6 * * *'
+  # 允許您在 GitHub 介面上手動點擊按鈕觸發
+  workflow_dispatch:
+
+jobs:
+  ping-streamlit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send HTTP request to Streamlit App
+        run: |
+          # 請將下方網址替換成您的 Streamlit 網頁真實 URL
+          curl -I https://ltgblqrrt.streamlit.app/
