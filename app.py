@@ -606,7 +606,7 @@ elif menu_option == "二、各類收據開立":
                 item_columns = st.columns(2)
                 with item_columns[0]:
                     item_people = st.number_input(
-                        "人數",
+                        "選項人數",
                         min_value=1,
                         value=1,
                         step=1,
@@ -701,11 +701,8 @@ elif menu_option == "二、各類收據開立":
                     "次選項": "\n".join(
                         item["次選項"] for item in receipt_items
                     ),
-                    "人數": "\n".join(
+                    "選項人數": "\n".join(
                         str(item["人數"]) for item in receipt_items
-                    ),
-                    "金額": "\n".join(
-                        str(item["金額"]) for item in receipt_items
                     ),
                 }
                 receipt_draft = {
@@ -968,7 +965,6 @@ elif menu_option == "二、各類收據開立":
                 "主選項",
                 "次選項",
                 "選項人數",
-                "金額",
                 "收到金額",
                 "系統備註",
                 "經手人備註",
