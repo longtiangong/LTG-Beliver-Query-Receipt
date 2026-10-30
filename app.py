@@ -705,7 +705,7 @@ elif menu_option == "二、各類收據開立":
                         str(item["人數"]) for item in receipt_items
                     ),
                     "金額": "\n".join(
-                        str(item["單價"]) for item in receipt_items
+                        str(item["金額"]) for item in receipt_items
                     ),
                 }
                 receipt_draft = {
