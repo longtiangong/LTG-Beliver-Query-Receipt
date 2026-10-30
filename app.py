@@ -2,6 +2,7 @@ import base64
 import datetime
 import html
 import secrets
+from decimal import Decimal, InvalidOperation
 from io import BytesIO
 
 import qrcode
@@ -133,6 +134,76 @@ def fetch_receipt_records():
     return pd.DataFrame(data["records"])
 
 
+@st.cache_data(ttl=60)
+def fetch_receipt_options():
+    """從受 API 金鑰保護的 GAS 端點讀取收據選項與單價"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法讀取各選項金額。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，無法讀取各選項金額。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={"action": "listReceiptOptions", "apiKey": GAS_API_KEY},
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"讀取各選項金額發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("讀取各選項金額失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if (
+        not isinstance(data, dict)
+        or data.get("status") != "success"
+        or not isinstance(data.get("options"), list)
+    ):
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"讀取各選項金額失敗：{message}")
+        return None
+    return data["options"]
+
+
+def parse_receipt_amount(value):
+    """將選項表中的金額轉為整數；空白或非整數金額交由人工輸入"""
+    if value is None or pd.isna(value):
+        return None
+    text = (
+        str(value)
+        .strip()
+        .replace(",", "")
+        .replace("NT$", "")
+        .replace("元", "")
+    )
+    if not text:
+        return None
+    try:
+        amount = Decimal(text)
+    except InvalidOperation as error:
+        raise ValueError(f"「{value}」不是有效的整數金額。") from error
+    if not amount.is_finite() or amount < 0 or amount != amount.to_integral_value():
+        raise ValueError(f"「{value}」不是有效的非負整數金額。")
+    return int(amount)
+
+
+def calculate_receipt_item(main_option, sub_option, people, unit_amount):
+    item_total = int(people * unit_amount)
+    system_note = (
+        f"{main_option}{sub_option}人數{people}人"
+        f"金額為{item_total:,.0f}元"
+    )
+    return item_total, system_note
+
+
 def save_receipt_record(receipt, pdf_bytes):
     """將收據存入 Google Sheet 的收據總表"""
     if not GAS_URL:
@@ -209,7 +280,11 @@ def create_receipt_pdf(receipt):
         ("住址", str(receipt.get("地址") or "無")),
         ("辦理項目", str(receipt["辦理項目"])),
         ("收到金額", f"NT$ {float(receipt['收到金額']):,.0f}"),
-        ("備註", str(receipt.get("備註") or "無")),
+        ("系統備註", str(receipt.get("系統備註") or "")),
+        (
+            "經手人備註",
+            str(receipt.get("經手人備註") or receipt.get("備註") or "無"),
+        ),
     ]
 
     copy_top = page_height - margin
@@ -228,7 +303,7 @@ def create_receipt_pdf(receipt):
     pdf.setFont("STSong-Light", 10)
 
     for label, value in fields:
-        line = f"{label}：{value}"
+        line = f"{label}：{value}".replace("\n", "；")
         wrapped_lines = []
         current_line = ""
         for character in line:
@@ -453,35 +528,155 @@ elif menu_option == "二、各類收據開立":
         r_address = st.text_input("地址", key="receipt_address")
         st.caption("輸入完整姓名並找到資料後，地址會自動帶出，仍可手動修改。")
 
-        receipt_type = st.selectbox(
-            "選項",
-            [
-                "1. 祭改",
-                "2. 光明燈",
-                "3. 太歲",
-                "4. 年斗",
-                "5. 補運",
-                "6. 補財庫",
-                "7. 進香",
-                "8. 添油香",
-                "9. 其他",
-            ],
+        receipt_options = fetch_receipt_options()
+        main_options = list(
+            dict.fromkeys(
+                str(option.get("主選項", "")).strip()
+                for option in (receipt_options or [])
+                if str(option.get("主選項", "")).strip()
+            )
         )
+        receipt_items = []
+        if main_options:
+            if "receipt_item_count" not in st.session_state:
+                st.session_state["receipt_item_count"] = 1
 
-        sub_option = ""
-        if receipt_type in ["5. 補運", "6. 補財庫"]:
-            sub_option = st.radio("選擇月份", ["3月", "6月", "9月"], horizontal=True)
-        elif receipt_type == "7. 進香":
-            sub_option = st.radio("選擇行程", ["南巡", "北巡"], horizontal=True)
+            for item_index in range(st.session_state["receipt_item_count"]):
+                st.markdown(f"**選項明細 {item_index + 1}**")
+                item_main = st.selectbox(
+                    "主選項",
+                    main_options,
+                    key=f"receipt_main_{item_index}",
+                )
+                matching_options = [
+                    option
+                    for option in receipt_options
+                    if str(option.get("主選項", "")).strip() == item_main
+                ]
+                sub_options = list(
+                    dict.fromkeys(
+                        str(option.get("次選項", "")).strip()
+                        for option in matching_options
+                        if str(option.get("次選項", "")).strip()
+                    )
+                )
+                selected_sub = ""
+                manual_sub = ""
+                if sub_options:
+                    selected_sub = st.selectbox(
+                        "次選項",
+                        [""] + sub_options,
+                        format_func=lambda value: value or "請選擇（或手動輸入）",
+                        key=f"receipt_sub_{item_index}",
+                    )
+                if not selected_sub:
+                    manual_sub = st.text_input(
+                        "次選項（無清單項目時手動輸入）",
+                        key=f"receipt_manual_sub_{item_index}",
+                    )
+                effective_sub = selected_sub or manual_sub.strip()
 
-        r_amount = st.number_input(
-            "收到金額（元）", min_value=0, value=0, step=1
+                lookup_sub = selected_sub
+                if not sub_options:
+                    lookup_sub = ""
+                matching_prices = []
+                for option in matching_options:
+                    if str(option.get("次選項", "")).strip() != lookup_sub:
+                        continue
+                    try:
+                        matching_prices.append(
+                            parse_receipt_amount(option.get("金額"))
+                        )
+                    except ValueError as error:
+                        st.warning(
+                            f"{item_main} {lookup_sub} 的工作表金額有誤：{error}"
+                            "；請手動確認金額。"
+                        )
+                sheet_amount = next(
+                    (amount for amount in matching_prices if amount is not None),
+                    None,
+                )
+                amount_key = f"receipt_amount_{item_index}"
+                signature_key = f"_receipt_price_signature_{item_index}"
+                price_signature = f"{item_main}\u241f{lookup_sub}"
+                if st.session_state.get(signature_key) != price_signature:
+                    st.session_state[amount_key] = sheet_amount or 0
+                    st.session_state[signature_key] = price_signature
+
+                item_columns = st.columns(2)
+                with item_columns[0]:
+                    item_people = st.number_input(
+                        "人數",
+                        min_value=1,
+                        value=1,
+                        step=1,
+                        key=f"receipt_people_{item_index}",
+                    )
+                with item_columns[1]:
+                    item_unit_amount = st.number_input(
+                        "金額（每人，元）",
+                        min_value=0,
+                        step=1,
+                        key=amount_key,
+                    )
+
+                item_total, item_note = calculate_receipt_item(
+                    item_main,
+                    effective_sub,
+                    item_people,
+                    item_unit_amount,
+                )
+                receipt_items.append(
+                    {
+                        "主選項": item_main,
+                        "次選項": effective_sub,
+                        "人數": int(item_people),
+                        "單價": int(item_unit_amount),
+                        "金額": item_total,
+                        "系統備註": item_note,
+                    }
+                )
+                st.caption(f"此項金額：NT$ {item_total:,.0f}")
+
+            item_buttons = st.columns(2)
+            if item_buttons[0].button(
+                "＋ 新增一筆主選項", key="add_receipt_item"
+            ):
+                st.session_state["receipt_item_count"] += 1
+                st.rerun()
+            if (
+                st.session_state["receipt_item_count"] > 1
+                and item_buttons[1].button(
+                    "－ 刪除最後一筆", key="remove_receipt_item"
+                )
+            ):
+                st.session_state["receipt_item_count"] -= 1
+                st.rerun()
+
+            r_total = sum(item["金額"] for item in receipt_items)
+            system_note = "\n".join(
+                item["系統備註"] for item in receipt_items
+            )
+            st.text_area("系統備註", value=system_note, disabled=True)
+            st.metric("總金額", f"NT$ {r_total:,.0f}")
+        else:
+            st.error(
+                "「各選項金額」工作表沒有可用的主選項，請先確認工作表資料。"
+            )
+            r_total = 0
+            system_note = ""
+
+        handler_note = st.text_area(
+            "經手人備註",
+            key="receipt_handler_note",
+            placeholder="可在此輸入其他備註...",
         )
-        r_note = st.text_area("備註說明", placeholder="可在此輸入詳細細節或金額等備註...")
 
         # * 2 收據金額輸入、總表永久保存及 QR code 生成
         generate_btn = st.button(
-            "🧾 登記收據並準備列印", type="primary"
+            "🧾 登記收據並準備列印",
+            type="primary",
+            disabled=not main_options,
         )
 
     with col_r:
@@ -491,13 +686,28 @@ elif menu_option == "二、各類收據開立":
             if not r_name.strip():
                 st.warning("請先輸入大德姓名！")
             else:
-                full_option = receipt_type
-                if sub_option:
-                    full_option += f" ({sub_option})"
-
                 taiwan_timezone = datetime.timezone(datetime.timedelta(hours=8))
                 issued_at = datetime.datetime.now(taiwan_timezone)
                 opened_at = issued_at.strftime("%Y-%m-%d %H:%M:%S")
+                full_option = "\n".join(
+                    item["主選項"]
+                    + (f" {item['次選項']}" if item["次選項"] else "")
+                    for item in receipt_items
+                )
+                item_values = {
+                    "主選項": "\n".join(
+                        item["主選項"] for item in receipt_items
+                    ),
+                    "次選項": "\n".join(
+                        item["次選項"] for item in receipt_items
+                    ),
+                    "人數": "\n".join(
+                        str(item["人數"]) for item in receipt_items
+                    ),
+                    "金額": "\n".join(
+                        str(item["金額"]) for item in receipt_items
+                    ),
+                }
                 receipt_draft = {
                     "收據編號": (
                         "LTG-"
@@ -509,8 +719,11 @@ elif menu_option == "二、各類收據開立":
                     "姓名": r_name.strip(),
                     "地址": r_address.strip(),
                     "辦理項目": full_option,
-                    "收到金額": r_amount,
-                    "備註": r_note.strip(),
+                    "收到金額": r_total,
+                    **item_values,
+                    "系統備註": system_note,
+                    "經手人備註": handler_note.strip(),
+                    "備註": handler_note.strip(),
                 }
                 pdf_bytes = create_receipt_pdf(receipt_draft)
                 receipt = save_receipt_record(receipt_draft, pdf_bytes)
@@ -526,7 +739,10 @@ elif menu_option == "二、各類收據開立":
             receipt_id = str(receipt["收據編號"])
             receipt_name = str(receipt["姓名"])
             receipt_amount = float(receipt["收到金額"])
-            receipt_note = str(receipt["備註"])
+            system_note = str(receipt.get("系統備註") or "")
+            handler_note = str(
+                receipt.get("經手人備註") or receipt.get("備註") or ""
+            )
             qr_bytes = st.session_state.get("active_receipt_qr")
             if not qr_bytes:
                 qr_bytes = create_receipt_qr(receipt["PDF連結"])
@@ -547,9 +763,14 @@ elif menu_option == "二、各類收據開立":
             escaped_time = html.escape(str(receipt["開立時間"]))
             escaped_name = html.escape(receipt_name)
             escaped_address = html.escape(str(receipt["地址"]) or "無")
-            escaped_option = html.escape(str(receipt["辦理項目"]))
+            escaped_option = html.escape(str(receipt["辦理項目"])).replace(
+                "\n", "<br>"
+            )
             escaped_amount = f"{receipt_amount:,.0f}"
-            escaped_note = html.escape(receipt_note or "無").replace(
+            escaped_system_note = html.escape(system_note or "無").replace(
+                "\n", "<br>"
+            )
+            escaped_handler_note = html.escape(handler_note or "無").replace(
                 "\n", "<br>"
             )
 
@@ -564,7 +785,8 @@ elif menu_option == "二、各類收據開立":
                         <p><b>住址：</b>{escaped_address}</p>
                         <p><b>辦理項目：</b><span class="option">{escaped_option}</span></p>
                         <p><b>收到金額：</b>NT$ {escaped_amount}</p>
-                        <p><b>備註：</b>{escaped_note}</p>
+                        <p><b>系統備註：</b>{escaped_system_note}</p>
+                        <p><b>經手人備註：</b>{escaped_handler_note}</p>
                     </div>
                     <img class="qr-code" src="{qr_data_uri}" alt="收據 QR code">
                 </div>
@@ -743,7 +965,13 @@ elif menu_option == "二、各類收據開立":
                 "姓名",
                 "地址",
                 "辦理項目",
+                "主選項",
+                "次選項",
+                "人數",
+                "金額",
                 "收到金額",
+                "系統備註",
+                "經手人備註",
                 "備註",
                 "PDF連結",
             ]
