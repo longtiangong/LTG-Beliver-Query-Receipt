@@ -29,6 +29,8 @@ var INCOME_HEADERS = [
   "規格",
   "金額(元)",
   "姓名",
+  "系統備註",
+  "經手人備註",
   "備註",
   "收據編號"
 ];
@@ -38,7 +40,12 @@ var EXPENSE_HEADERS = [
   "科目",
   "規格",
   "金額(元)",
-  "備註"
+  "姓名",
+  "系統備註",
+  "經手人備註",
+  "備註",
+  "收據編號",
+  "PDF連結"
 ];
 
 function getBelieverSheet() {
@@ -96,8 +103,8 @@ function getFinanceOptions(sheetName, incomeOptions) {
     }
     if (incomeOptions) {
       options.push({
-        "主選項": subject,
-        "次選項": String(row[specificationColumn] || "").trim(),
+        "科目": subject,
+        "規格": String(row[specificationColumn] || "").trim(),
         "金額": row[amountColumn]
       });
     } else {
@@ -263,6 +270,12 @@ function getReceiptRecords() {
     if (record["選項人數"] === undefined && record["人數"] !== undefined) {
       record["選項人數"] = record["人數"];
     }
+    if (record["科目"] === undefined && record["主選項"] !== undefined) {
+      record["科目"] = record["主選項"];
+    }
+    if (record["規格"] === undefined && record["次選項"] !== undefined) {
+      record["規格"] = record["次選項"];
+    }
     return record;
   });
 }
@@ -374,24 +387,87 @@ function saveReceiptRecord(receipt, pdfBase64) {
   return record;
 }
 
-function saveExpenseRecord(expense) {
+function saveExpenseRecord(expense, pdfBase64) {
   if (!expense || !expense["科目"]) {
     throw new Error("支出科目為必填欄位。");
+  }
+  if (!expense["姓名"]) {
+    throw new Error("支出收據姓名為必填欄位。");
+  }
+  if (!pdfBase64) {
+    throw new Error("缺少支出收執聯 PDF，支出未寫入。");
   }
   var date = String(expense["日期"] || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw new Error("支出日期格式錯誤。");
   }
   var amount = validateFinanceAmount(expense["金額(元)"]);
+  var receiptId = String(expense["收據編號"] || "");
+  if (!/^LTG-EXP-\d{8}-\d{5}$/.test(receiptId)) {
+    throw new Error("支出收據編號格式錯誤。");
+  }
+  var expenseSheet = getFinanceSpreadsheet().getSheetByName(EXPENSE_SHEET_NAME);
+  if (expenseSheet && expenseSheet.getLastRow() > 1) {
+    var expenseHeaders = expenseSheet
+      .getRange(1, 1, 1, expenseSheet.getLastColumn())
+      .getValues()[0];
+    var receiptColumn = expenseHeaders.findIndex(function(header) {
+      return normalizeHeader(header) === "收據編號";
+    });
+    if (receiptColumn >= 0) {
+      var existingReceiptIds = expenseSheet
+        .getRange(
+          2,
+          receiptColumn + 1,
+          expenseSheet.getLastRow() - 1,
+          1
+        )
+        .getValues();
+      if (existingReceiptIds.some(function(row) {
+        return String(row[0]) === receiptId;
+      })) {
+        throw new Error("支出收據編號重複，請重新產生收據。");
+      }
+    }
+  }
   var record = {
     "日期": date,
     "類別": String(expense["科目"]),
     "科目": String(expense["科目"]),
     "規格": String(expense["規格"] || ""),
     "金額(元)": amount,
-    "備註": String(expense["備註"] || "")
+    "姓名": String(expense["姓名"]),
+    "系統備註": String(expense["系統備註"] || ""),
+    "經手人備註": String(expense["經手人備註"] || ""),
+    "備註": String(expense["備註"] || ""),
+    "收據編號": receiptId,
+    "PDF連結": ""
   };
-  appendFinanceLedgerRecord(EXPENSE_SHEET_NAME, record);
+
+  var pdfFile;
+  var appended = null;
+  try {
+    var pdfBlob = Utilities.newBlob(
+      Utilities.base64Decode(pdfBase64),
+      "application/pdf",
+      receiptId + ".pdf"
+    );
+    pdfFile = DriveApp.createFile(pdfBlob);
+    pdfFile.setSharing(DriveApp.Access.ANYONE, DriveApp.Permission.VIEW);
+    record["PDF連結"] = pdfFile.getUrl();
+    appended = appendFinanceLedgerRecord(EXPENSE_SHEET_NAME, record);
+  } catch (saveError) {
+    if (
+      appended &&
+      appended.sheet.getLastRow() === appended.rowNumber
+    ) {
+      appended.sheet.deleteRow(appended.rowNumber);
+    }
+    if (pdfFile) {
+      pdfFile.setTrashed(true);
+    }
+    throw new Error("支出收執聯 PDF 或支出表寫入失敗：" + saveError.message);
+  }
   return record;
 }
 
@@ -499,7 +575,7 @@ function doPost(e) {
       return jsonOutput({
         status: "success",
         message: "支出已加入支出表",
-        record: saveExpenseRecord(contents.expense)
+        record: saveExpenseRecord(contents.expense, contents.pdfBase64)
       });
     }
 

@@ -63,6 +63,10 @@ EXPENSE_CATEGORIES = (
 )
 
 
+def _normalize_option_text(value):
+    return "".join(str(value or "").split()).casefold()
+
+
 @st.cache_data(ttl=60)
 def fetch_believer_data():
     """從 Google Sheet 抓取信徒資料"""
@@ -189,7 +193,26 @@ def fetch_receipt_options():
         )
         st.error(f"讀取收入科目金額失敗：{message}")
         return None
-    return data["options"]
+    options = []
+    for option in data["options"]:
+        if not isinstance(option, dict):
+            st.error("讀取收入科目金額失敗：選項資料格式錯誤。")
+            return None
+        subject = str(
+            option.get("科目") or option.get("主選項") or ""
+        ).strip()
+        specification = str(
+            option.get("規格") or option.get("次選項") or ""
+        ).strip()
+        if subject:
+            options.append(
+                {
+                    "科目": subject,
+                    "規格": specification,
+                    "金額": option.get("金額"),
+                }
+            )
+    return options
 
 
 @st.cache_data(ttl=60)
@@ -231,8 +254,8 @@ def fetch_expense_options():
     return data["options"]
 
 
-def save_expense_record(expense):
-    """將支出紀錄寫入指定 Google Sheet 的支出表"""
+def save_expense_record(expense, pdf_bytes):
+    """將支出收據及 PDF 寫入指定 Google Sheet 的支出表"""
     if not GAS_URL:
         st.error("未設定 GAS_URL，無法儲存支出。")
         return None
@@ -246,6 +269,7 @@ def save_expense_record(expense):
                 "action": "saveExpense",
                 "apiKey": GAS_API_KEY,
                 "expense": expense,
+                "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
             },
             timeout=30,
         )
@@ -406,18 +430,21 @@ def create_receipt_qr(pdf_url):
 
 
 def create_receipt_pdf(receipt):
-    """製作只包含收執聯的 A5 PDF"""
+    """製作上下排列的 A5 收執聯及存根聯 PDF"""
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     pdf_buffer = BytesIO()
     page_width, page_height = A5
     pdf = canvas.Canvas(pdf_buffer, pagesize=A5)
     margin = 24
-    copy_height = page_height - margin * 2
     fields = [
         ("開立時間", str(receipt["開立時間"])),
         ("收據編號", str(receipt["收據編號"])),
         ("信徒姓名", str(receipt["姓名"])),
-        ("住址", str(receipt.get("地址") or "無")),
+        *(
+            [("住址", str(receipt.get("地址") or "無"))]
+            if receipt.get("地址") is not None
+            else []
+        ),
         ("辦理項目", str(receipt["辦理項目"])),
         ("收到金額", f"NT$ {float(receipt['收到金額']):,.0f}"),
         ("系統備註", str(receipt.get("系統備註") or "")),
@@ -426,60 +453,151 @@ def create_receipt_pdf(receipt):
             str(receipt.get("經手人備註") or receipt.get("備註") or "無"),
         ),
     ]
+    if receipt.get("日期"):
+        fields.insert(1, ("支出日期", str(receipt["日期"])))
 
-    copy_top = page_height - margin
-    copy_bottom = copy_top - copy_height
+    copy_height = (page_height - margin * 2 - 12) / 2
+    for copy_index, title in enumerate(("收執聯", "存根聯")):
+        copy_top = page_height - margin - copy_index * (copy_height + 12)
+        copy_bottom = copy_top - copy_height
+        pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
+        pdf.rect(margin, copy_bottom, page_width - margin * 2, copy_height)
+        pdf.setFillColorRGB(0.55, 0.0, 0.0)
+        pdf.setFont("STSong-Light", 13)
+        pdf.drawCentredString(
+            page_width / 2, copy_top - 20, f"龍天宮 {title}"
+        )
+
+        text_x = margin + 10
+        text_y = copy_top - 38
+        max_width = page_width - margin * 2 - 20
+        pdf.setFillColorRGB(0.15, 0.15, 0.15)
+        pdf.setFont("STSong-Light", 8)
+        for label, value in fields:
+            line = f"{label}：{value}".replace("\n", "；")
+            wrapped_lines = []
+            current_line = ""
+            for character in line:
+                candidate = current_line + character
+                if current_line and pdfmetrics.stringWidth(
+                    candidate, "STSong-Light", 8
+                ) > max_width:
+                    wrapped_lines.append(current_line)
+                    current_line = character
+                else:
+                    current_line = candidate
+            wrapped_lines.append(current_line)
+            for wrapped_line in wrapped_lines:
+                pdf.drawString(text_x, text_y, wrapped_line)
+                text_y -= 10
+
+        signature_y = copy_bottom + 14
+        pdf.drawString(text_x, signature_y + 5, "經手人/蓋章：")
+        pdf.line(text_x + 52, signature_y + 3, text_x + 120, signature_y + 3)
+        seal_size = 42
+        seal_x = page_width - margin - 10 - seal_size
+        seal_y = copy_bottom + 8
+        pdf.setStrokeColorRGB(0.7, 0.08, 0.08)
+        pdf.setLineWidth(2)
+        pdf.rect(seal_x, seal_y, seal_size, seal_size)
+        pdf.setLineWidth(0.8)
+        pdf.rect(seal_x + 3, seal_y + 3, seal_size - 6, seal_size - 6)
+        pdf.setFillColorRGB(0.7, 0.08, 0.08)
+        pdf.setFont("STSong-Light", 9)
+        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 24, "龍天宮")
+        pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 12, "管委會")
+
     pdf.setStrokeColorRGB(0.55, 0.0, 0.0)
-    pdf.rect(margin, copy_bottom, page_width - margin * 2, copy_height)
-
-    pdf.setFillColorRGB(0.55, 0.0, 0.0)
-    pdf.setFont("STSong-Light", 16)
-    pdf.drawCentredString(page_width / 2, copy_top - 25, "龍天宮 收執聯")
-
-    text_x = margin + 14
-    text_y = copy_top - 49
-    max_width = page_width - margin * 2 - 28
-    pdf.setFillColorRGB(0.15, 0.15, 0.15)
-    pdf.setFont("STSong-Light", 10)
-
-    for label, value in fields:
-        line = f"{label}：{value}".replace("\n", "；")
-        wrapped_lines = []
-        current_line = ""
-        for character in line:
-            candidate = current_line + character
-            if current_line and pdfmetrics.stringWidth(
-                candidate, "STSong-Light", 10
-            ) > max_width:
-                wrapped_lines.append(current_line)
-                current_line = character
-            else:
-                current_line = candidate
-        wrapped_lines.append(current_line)
-
-        for wrapped_line in wrapped_lines:
-            pdf.drawString(text_x, text_y, wrapped_line)
-            text_y -= 14
-
-    signature_y = copy_bottom + 18
-    pdf.drawString(text_x, signature_y + 9, "經手人/蓋章：")
-    pdf.line(text_x + 64, signature_y + 7, text_x + 150, signature_y + 7)
-
-    seal_size = 58
-    seal_x = page_width - margin - 14 - seal_size
-    seal_y = copy_bottom + 12
-    pdf.setStrokeColorRGB(0.7, 0.08, 0.08)
-    pdf.setLineWidth(2)
-    pdf.rect(seal_x, seal_y, seal_size, seal_size)
-    pdf.setLineWidth(0.8)
-    pdf.rect(seal_x + 4, seal_y + 4, seal_size - 8, seal_size - 8)
-    pdf.setFillColorRGB(0.7, 0.08, 0.08)
-    pdf.setFont("STSong-Light", 11)
-    pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 32, "龍天宮")
-    pdf.drawCentredString(seal_x + seal_size / 2, seal_y + 17, "管委會")
+    pdf.setDash(3, 3)
+    pdf.line(margin, page_height / 2, page_width - margin, page_height / 2)
+    pdf.setDash()
 
     pdf.save()
     return pdf_buffer.getvalue()
+
+
+def render_receipt_preview(receipt, qr_bytes, receipt_type):
+    qr_data_uri = (
+        "data:image/png;base64,"
+        + base64.b64encode(qr_bytes).decode("ascii")
+    )
+    fields = [
+        ("開立時間", receipt.get("開立時間", "")),
+        ("收據編號", receipt.get("收據編號", "")),
+        ("姓名", receipt.get("姓名", "")),
+    ]
+    if receipt.get("日期"):
+        fields.insert(1, ("支出日期", receipt["日期"]))
+    if receipt.get("地址"):
+        fields.append(("地址", receipt["地址"]))
+    fields.extend(
+        [
+            ("辦理項目", receipt.get("辦理項目", "")),
+            ("收到金額", f"NT$ {int(receipt.get('收到金額', 0)):,.0f}"),
+            ("系統備註", receipt.get("系統備註") or "無"),
+            (
+                "經手人備註",
+                receipt.get("經手人備註") or receipt.get("備註") or "無",
+            ),
+        ]
+    )
+    details = "".join(
+        "<p><b>"
+        + html.escape(str(label))
+        + "：</b>"
+        + html.escape(str(value)).replace("\n", "<br>")
+        + "</p>"
+        for label, value in fields
+    )
+    st.image(
+        qr_bytes,
+        caption="掃描 QR code 即可開啟收執聯 PDF",
+        width=160,
+    )
+    st.link_button("開啟收執聯 PDF", receipt["PDF連結"])
+    st.components.v1.html(
+        f"""
+        <style>
+            body {{ margin: 0; font-family: sans-serif; color: #333; }}
+            .copies {{ display: grid; grid-template-rows: 1fr auto 1fr; gap: 8px; }}
+            .receipt-copy {{ position: relative; min-height: 245px; padding: 12px 16px 76px; border: 1px solid #8B0000; background: #FFFDF0; }}
+            .receipt-copy h2 {{ margin: 0 0 8px; text-align: center; color: #8B0000; font-size: 1.25em; }}
+            .copy-content {{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
+            .receipt-copy p {{ margin: 4px 0; font-size: .9em; line-height: 1.25; overflow-wrap: anywhere; }}
+            .qr-code {{ width: 68px; height: 68px; flex: 0 0 68px; }}
+            .signature {{ position: absolute; right: 16px; bottom: 10px; left: 16px; display: flex; justify-content: space-between; align-items: flex-end; font-size: .78em; }}
+            .seal {{ display: flex; width: 64px; height: 64px; align-items: center; justify-content: center; border: 3px double #B22222; color: #B22222; font-size: 13px; font-weight: bold; text-align: center; }}
+            .cut-line {{ border-top: 2px dashed #8B0000; color: #8B0000; font-size: .75em; text-align: center; }}
+            .print-button {{ margin-top: 12px; padding: 8px 16px; border: 0; border-radius: 6px; background: #8B0000; color: white; font-size: 1em; cursor: pointer; }}
+            @media print {{
+                @page {{ size: A5 portrait; margin: 8mm; }}
+                html, body {{ width: 100%; height: 190mm; }}
+                .copies {{ height: 190mm; gap: 4px; break-inside: avoid; page-break-inside: avoid; }}
+                .receipt-copy {{ min-height: 0; padding: 8px 12px 68px; print-color-adjust: exact; -webkit-print-color-adjust: exact; break-inside: avoid; page-break-inside: avoid; }}
+                .receipt-copy .signature {{ right: 12px; bottom: 8px; left: 12px; }}
+                .receipt-copy .seal {{ width: 58px; height: 58px; }}
+                .qr-code {{ width: 62px; height: 62px; flex-basis: 62px; }}
+                .print-button {{ display: none; }}
+            }}
+        </style>
+        <div class="copies">
+            <section class="receipt-copy">
+                <h2>⛩️ 龍天宮 {html.escape(receipt_type)}收執聯</h2>
+                <div class="copy-content">{details}<img class="qr-code" src="{qr_data_uri}" alt="收據 QR code"></div>
+                <div class="signature"><span><b>經手人/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
+            </section>
+            <div class="cut-line">沿虛線裁切</div>
+            <section class="receipt-copy">
+                <h2>⛩️ 龍天宮 {html.escape(receipt_type)}存根聯</h2>
+                <div class="copy-content">{details}<img class="qr-code" src="{qr_data_uri}" alt="收據 QR code"></div>
+                <div class="signature"><span><b>經手人/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
+            </section>
+        </div>
+        <button class="print-button" onclick="window.print()">🖨️ 列印收執聯/存根聯</button>
+        """,
+        height=660,
+        scrolling=False,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -684,62 +802,81 @@ elif menu_option == "二、收入收據":
         st.caption("輸入完整姓名並找到資料後，地址會自動帶出，仍可手動修改。")
 
         receipt_options = fetch_receipt_options()
-        main_options = list(
+        available_subjects = list(
             dict.fromkeys(
-                str(option.get("主選項", "")).strip()
+                str(option.get("科目", "")).strip()
                 for option in (receipt_options or [])
-                if str(option.get("主選項", "")).strip()
-                and str(option.get("主選項", "")).strip()
-                in INCOME_CATEGORIES[submenu_option]
+                if str(option.get("科目", "")).strip()
             )
         )
+        category_subjects = {
+            _normalize_option_text(subject)
+            for subject in INCOME_CATEGORIES[submenu_option]
+        }
+        subject_options = [
+            subject
+            for subject in available_subjects
+            if _normalize_option_text(subject) in category_subjects
+        ]
+        if available_subjects and not subject_options:
+            subject_options = available_subjects
+            st.warning(
+                f"收入科目金額工作表中的科目未對應「{submenu_option}」的預設清單，"
+                "目前先顯示工作表全部科目；請確認選取正確。"
+            )
         receipt_items = []
-        if main_options:
+        if subject_options:
             if "receipt_item_count" not in st.session_state:
                 st.session_state["receipt_item_count"] = 1
 
             for item_index in range(st.session_state["receipt_item_count"]):
                 item_key_prefix = f"income_{submenu_option}_{item_index}"
                 st.markdown(f"**選項明細 {item_index + 1}**")
-                item_main = st.selectbox(
+                item_subject = st.selectbox(
                     "科目",
-                    main_options,
-                    key=f"{item_key_prefix}_main",
+                    subject_options,
+                    key=f"{item_key_prefix}_subject",
                 )
                 matching_options = [
                     option
                     for option in receipt_options
-                    if str(option.get("主選項", "")).strip() == item_main
+                    if _normalize_option_text(option.get("科目"))
+                    == _normalize_option_text(item_subject)
                 ]
                 sub_options = list(
                     dict.fromkeys(
-                        str(option.get("次選項", "")).strip()
+                        str(option.get("規格", "")).strip()
                         for option in matching_options
-                        if str(option.get("次選項", "")).strip()
+                        if str(option.get("規格", "")).strip()
                     )
                 )
-                selected_sub = ""
-                manual_sub = ""
+                selected_specification = ""
+                manual_specification = ""
                 if sub_options:
-                    selected_sub = st.selectbox(
+                    selected_specification = st.selectbox(
                         "規格",
                         [""] + sub_options,
                         format_func=lambda value: value or "請選擇（或手動輸入）",
-                        key=f"{item_key_prefix}_sub",
+                        key=f"{item_key_prefix}_specification",
                     )
-                if not selected_sub:
-                    manual_sub = st.text_input(
+                if not selected_specification:
+                    manual_specification = st.text_input(
                         "規格（無清單項目時手動輸入）",
-                        key=f"{item_key_prefix}_manual_sub",
+                        key=f"{item_key_prefix}_manual_specification",
                     )
-                effective_sub = selected_sub or manual_sub.strip()
+                effective_specification = (
+                    selected_specification or manual_specification.strip()
+                )
 
-                lookup_sub = selected_sub
+                lookup_specification = selected_specification
                 if not sub_options:
-                    lookup_sub = ""
+                    lookup_specification = ""
                 matching_prices = []
                 for option in matching_options:
-                    if str(option.get("次選項", "")).strip() != lookup_sub:
+                    if (
+                        str(option.get("規格", "")).strip()
+                        != lookup_specification
+                    ):
                         continue
                     try:
                         matching_prices.append(
@@ -747,7 +884,7 @@ elif menu_option == "二、收入收據":
                         )
                     except ValueError as error:
                         st.warning(
-                            f"{item_main} {lookup_sub} 的工作表金額有誤：{error}"
+                            f"{item_subject} {lookup_specification} 的工作表金額有誤：{error}"
                             "；請手動確認金額。"
                         )
                 sheet_amount = next(
@@ -756,7 +893,9 @@ elif menu_option == "二、收入收據":
                 )
                 amount_key = f"{item_key_prefix}_amount"
                 signature_key = f"_{item_key_prefix}_price_signature"
-                price_signature = f"{item_main}\u241f{lookup_sub}"
+                price_signature = (
+                    f"{item_subject}\u241f{lookup_specification}"
+                )
                 if st.session_state.get(signature_key) != price_signature:
                     st.session_state[amount_key] = sheet_amount or 0
                     st.session_state[signature_key] = price_signature
@@ -779,15 +918,15 @@ elif menu_option == "二、收入收據":
                     )
 
                 item_total, item_note = calculate_receipt_item(
-                    item_main,
-                    effective_sub,
+                    item_subject,
+                    effective_specification,
                     item_people,
                     item_unit_amount,
                 )
                 receipt_items.append(
                     {
-                        "主選項": item_main,
-                        "次選項": effective_sub,
+                        "主選項": item_subject,
+                        "次選項": effective_specification,
                         "人數": int(item_people),
                         "單價": int(item_unit_amount),
                         "金額": item_total,
@@ -798,7 +937,7 @@ elif menu_option == "二、收入收據":
 
             item_buttons = st.columns(2)
             if item_buttons[0].button(
-                "＋ 新增一筆主選項", key="add_receipt_item"
+                "＋ 新增一筆科目", key="add_receipt_item"
             ):
                 st.session_state["receipt_item_count"] += 1
                 st.rerun()
@@ -819,8 +958,9 @@ elif menu_option == "二、收入收據":
             st.metric("總金額", f"NT$ {r_total:,.0f}")
         else:
             st.error(
-                f"「收入科目金額」工作表在「{submenu_option}」沒有可用科目，"
-                "請確認 Google Sheet 資料及欄位。"
+                "「收入科目金額」工作表沒有可用科目。"
+                "請確認工作表標題為「科目、規格、金額(元)」，"
+                "並確認已部署最新的 Apps Script。"
             )
             r_total = 0
             system_note = ""
@@ -835,7 +975,7 @@ elif menu_option == "二、收入收據":
         generate_btn = st.button(
             "🧾 登記收據並準備列印",
             type="primary",
-            disabled=not main_options,
+            disabled=not subject_options,
         )
 
     with col_r:
@@ -1123,8 +1263,8 @@ elif menu_option == "二、收入收據":
                 "地址",
                 "辦理項目",
                 "類別",
-                "主選項",
-                "次選項",
+                "科目",
+                "規格",
                 "選項人數",
                 "收到金額",
                 "系統備註",
@@ -1155,7 +1295,8 @@ elif menu_option == "三、支出內容":
     matching_expenses = [
         option
         for option in (expense_options or [])
-        if str(option.get("科目", "")).strip() == submenu_option
+        if _normalize_option_text(option.get("科目"))
+        == _normalize_option_text(submenu_option)
     ]
     specifications = list(
         dict.fromkeys(
@@ -1165,55 +1306,204 @@ elif menu_option == "三、支出內容":
         )
     )
 
-    expense_date = st.date_input("日期", value=datetime.date.today())
-    if specifications:
-        specification = st.selectbox("規格", specifications)
-    else:
-        specification = st.text_input("規格")
+    expense_col, preview_col = st.columns([1, 1])
+    with expense_col:
+        st.subheader("1. 輸入支出資料")
+        expense_name = st.text_input("大德姓名", key="expense_name")
+        expense_date = st.date_input(
+            "支出日期", value=datetime.date.today(), key="expense_date"
+        )
+        if "expense_item_count" not in st.session_state:
+            st.session_state["expense_item_count"] = 1
 
-    selected_expense = next(
-        (
-            option
-            for option in matching_expenses
-            if str(option.get("規格", "")).strip() == specification
-        ),
-        {},
-    )
-    try:
-        suggested_amount = parse_receipt_amount(selected_expense.get("金額"))
-    except ValueError as error:
-        st.warning(f"工作表預設金額有誤：{error}請手動輸入金額。")
-        suggested_amount = None
-    amount_key = "expense_amount"
-    amount_signature_key = "_expense_amount_signature"
-    amount_signature = f"{submenu_option}\u241f{specification}"
-    if st.session_state.get(amount_signature_key) != amount_signature:
-        st.session_state[amount_key] = suggested_amount or 0
-        st.session_state[amount_signature_key] = amount_signature
-    expense_amount = st.number_input(
-        "金額（元）",
-        min_value=0,
-        step=1,
-        key=amount_key,
-    )
-    description = st.text_area("備註")
-    save_expense = st.button("儲存支出", type="primary")
+        expense_items = []
+        for item_index in range(st.session_state["expense_item_count"]):
+            st.markdown(f"**支出明細 {item_index + 1}**")
+            item_key_prefix = f"expense_{submenu_option}_{item_index}"
+            if specifications:
+                specification = st.selectbox(
+                    "規格",
+                    specifications,
+                    key=f"{item_key_prefix}_specification",
+                )
+            else:
+                specification = st.text_input(
+                    "規格", key=f"{item_key_prefix}_manual_specification"
+                )
 
-    if save_expense:
-        if specifications and not specification:
-            st.error("請選擇支出規格。")
-        else:
-            result = save_expense_record(
+            selected_expense = next(
+                (
+                    option
+                    for option in matching_expenses
+                    if _normalize_option_text(option.get("規格"))
+                    == _normalize_option_text(specification)
+                ),
+                {},
+            )
+            try:
+                suggested_amount = parse_receipt_amount(
+                    selected_expense.get("金額")
+                )
+            except ValueError as error:
+                st.warning(
+                    f"{submenu_option} {specification} 的工作表預設金額有誤："
+                    f"{error}請手動輸入金額。"
+                )
+                suggested_amount = None
+
+            signature_key = f"_{item_key_prefix}_price_signature"
+            amount_key = f"{item_key_prefix}_amount"
+            price_signature = f"{submenu_option}\u241f{specification}"
+            if st.session_state.get(signature_key) != price_signature:
+                st.session_state[amount_key] = suggested_amount or 0
+                st.session_state[signature_key] = price_signature
+            item_columns = st.columns(2)
+            with item_columns[0]:
+                item_people = st.number_input(
+                    "人數",
+                    min_value=1,
+                    value=1,
+                    step=1,
+                    key=f"{item_key_prefix}_people",
+                )
+            with item_columns[1]:
+                item_unit_amount = st.number_input(
+                    "金額（每人，元）",
+                    min_value=0,
+                    step=1,
+                    key=amount_key,
+                )
+            item_total, item_note = calculate_receipt_item(
+                submenu_option,
+                specification,
+                item_people,
+                item_unit_amount,
+            )
+            expense_items.append(
                 {
-                    "日期": expense_date.strftime("%Y-%m-%d"),
-                    "科目": submenu_option,
                     "規格": specification.strip(),
-                    "金額(元)": int(expense_amount),
-                    "備註": description.strip(),
+                    "人數": int(item_people),
+                    "單價": int(item_unit_amount),
+                    "金額": item_total,
+                    "系統備註": item_note,
                 }
             )
-            if result is not None:
-                st.success("支出已儲存至 Google Sheet「支出表」。")
+            st.caption(f"此項金額：NT$ {item_total:,.0f}")
+
+        item_buttons = st.columns(2)
+        if item_buttons[0].button(
+            "＋ 新增一筆規格", key="add_expense_item"
+        ):
+            st.session_state["expense_item_count"] += 1
+            st.rerun()
+        if (
+            st.session_state["expense_item_count"] > 1
+            and item_buttons[1].button(
+                "－ 刪除最後一筆", key="remove_expense_item"
+            )
+        ):
+            st.session_state["expense_item_count"] -= 1
+            st.rerun()
+
+        expense_total = sum(item["金額"] for item in expense_items)
+        expense_system_note = "\n".join(
+            item["系統備註"] for item in expense_items
+        )
+        st.text_area(
+            "系統備註",
+            value=expense_system_note,
+            disabled=True,
+            key="expense_system_note_display",
+        )
+        st.metric("總金額", f"NT$ {expense_total:,.0f}")
+        expense_handler_note = st.text_area(
+            "經手人備註", key="expense_handler_note"
+        )
+        save_expense = st.button(
+            "🧾 登記支出並準備列印",
+            type="primary",
+            disabled=not expense_items,
+            key="save_expense_receipt",
+        )
+
+    with preview_col:
+        st.subheader("2. 收執聯預覽/呈現")
+        if save_expense:
+            if not expense_name.strip():
+                st.warning("請先輸入大德姓名。")
+            elif any(not item["規格"] for item in expense_items):
+                st.warning("請完成所有支出明細的規格。")
+            else:
+                taiwan_timezone = datetime.timezone(
+                    datetime.timedelta(hours=8)
+                )
+                issued_at = datetime.datetime.now(taiwan_timezone)
+                opened_at = issued_at.strftime("%Y-%m-%d %H:%M:%S")
+                receipt_id = (
+                    "LTG-EXP-"
+                    + issued_at.strftime("%Y%m%d")
+                    + "-"
+                    + str(secrets.randbelow(90000) + 10000)
+                )
+                full_option = "\n".join(
+                    f"{submenu_option} {item['規格']}".strip()
+                    for item in expense_items
+                )
+                expense_draft = {
+                    "收據編號": receipt_id,
+                    "開立時間": opened_at,
+                    "日期": expense_date.strftime("%Y-%m-%d"),
+                    "姓名": expense_name.strip(),
+                    "辦理項目": full_option,
+                    "收到金額": expense_total,
+                    "規格": "\n".join(
+                        item["規格"] for item in expense_items
+                    ),
+                    "選項人數": "\n".join(
+                        str(item["人數"]) for item in expense_items
+                    ),
+                    "類別": submenu_option,
+                    "科目": submenu_option,
+                    "系統備註": expense_system_note,
+                    "經手人備註": expense_handler_note.strip(),
+                    "備註": expense_handler_note.strip(),
+                }
+                pdf_bytes = create_receipt_pdf(expense_draft)
+                result = save_expense_record(
+                    {
+                        "收據編號": receipt_id,
+                        "日期": expense_date.strftime("%Y-%m-%d"),
+                        "開立時間": opened_at,
+                        "科目": submenu_option,
+                        "規格": expense_draft["規格"],
+                        "姓名": expense_name.strip(),
+                        "金額(元)": expense_total,
+                        "系統備註": expense_system_note,
+                        "經手人備註": expense_handler_note.strip(),
+                        "備註": expense_handler_note.strip(),
+                    },
+                    pdf_bytes,
+                )
+                if result:
+                    qr_bytes = create_receipt_qr(result["PDF連結"])
+                    st.session_state["active_expense_receipt"] = {
+                        **expense_draft,
+                        **result,
+                    }
+                    st.session_state["active_expense_receipt_qr"] = qr_bytes
+                    st.success(
+                        f"支出收據 {receipt_id} 已建立 PDF 並加入支出表。"
+                    )
+
+        active_expense = st.session_state.get("active_expense_receipt")
+        if active_expense:
+            qr_bytes = st.session_state.get("active_expense_receipt_qr")
+            if not qr_bytes:
+                qr_bytes = create_receipt_qr(active_expense["PDF連結"])
+                st.session_state["active_expense_receipt_qr"] = qr_bytes
+            render_receipt_preview(
+                active_expense, qr_bytes, receipt_type="支出"
+            )
 
     st.divider()
     st.subheader("支出紀錄")
@@ -1227,7 +1517,17 @@ elif menu_option == "三、支出內容":
         if expense_df.empty:
             st.info("目前沒有此類別的支出紀錄。")
         else:
-            st.dataframe(expense_df, use_container_width=True, hide_index=True)
+            st.dataframe(
+                expense_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "PDF連結": st.column_config.LinkColumn(
+                        "收執聯 PDF",
+                        display_text="開啟 PDF",
+                    )
+                },
+            )
 
 elif menu_option == "四、收入與支出比較圖表":
     st.header("📊 收入與支出比較圖表")
