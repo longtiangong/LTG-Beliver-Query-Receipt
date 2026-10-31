@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import qrcode
 import requests
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from reportlab.lib.pagesizes import A5
 from reportlab.pdfbase import pdfmetrics
@@ -498,6 +499,71 @@ def build_monthly_finance_chart_data(
     chart_data = totals.join(filtered, how="left")
     chart_data[["收入", "支出"]] = chart_data[["收入", "支出"]].fillna(0)
     return chart_data[["收入", "收入總計", "支出", "支出總計"]].sort_index()
+
+
+def build_finance_summary_table(items, record_type):
+    rows = [item for item in items if item["類型"] == record_type]
+    columns = ["科目", "規格", "金額(元)"]
+    if rows:
+        summary = (
+            pd.DataFrame(rows)
+            .groupby(["科目", "規格"], as_index=False, dropna=False)["金額"]
+            .sum()
+            .rename(columns={"金額": "金額(元)"})
+            .sort_values(["科目", "規格"])
+        )
+        total_amount = summary["金額(元)"].sum()
+        summary.loc[len(summary)] = {
+            "科目": "總金額",
+            "規格": "",
+            "金額(元)": total_amount,
+        }
+        return summary[columns]
+    return pd.DataFrame(columns=columns)
+
+
+def create_monthly_finance_figure(chart_data):
+    series_colors = {
+        "收入": "#81c784",
+        "收入總計": "#2e7d32",
+        "支出": "#e57373",
+        "支出總計": "#c62828",
+    }
+    figure = go.Figure()
+    for series, color in series_colors.items():
+        figure.add_trace(
+            go.Bar(
+                x=chart_data.index.tolist(),
+                y=chart_data[series].tolist(),
+                name=series,
+                marker_color=color,
+                hovertemplate=(
+                    "月份 %{x}<br>"
+                    + series
+                    + "：NT$ %{y:,.0f}<extra></extra>"
+                ),
+            )
+        )
+    figure.update_layout(
+        barmode="group",
+        bargap=0.22,
+        bargroupgap=0.08,
+        template="plotly_dark",
+        height=420,
+        margin={"l": 16, "r": 16, "t": 24, "b": 16},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend={"orientation": "h", "y": -0.22, "x": 0},
+        hovermode="x unified",
+        xaxis={
+            "title": "開立月份（YYYY-MM）",
+            "type": "category",
+            "categoryorder": "array",
+            "categoryarray": chart_data.index.tolist(),
+        },
+        yaxis={"title": "金額（元）", "rangemode": "tozero"},
+    )
+    return figure
 
 
 def build_receipt_display_fields(receipt):
@@ -1557,8 +1623,37 @@ elif menu_option == "四、收入與支出比較圖表":
                 )
                 st.caption(
                     "月份依收據開立時間（YYYY-MM）彙整；淺色柱為所選科目／規格金額，"
-                    "深色柱為當月收入或支出總計。收入為綠色，支出為紅色。"
+                    "深色柱為當月收入或支出總計。收入為綠色，支出為紅色；"
+                    "四組柱子並排顯示。"
                 )
+                income_table, expense_table = st.columns(2)
+                with income_table:
+                    st.subheader("收入明細彙總")
+                    income_summary = build_finance_summary_table(
+                        all_items, "收入"
+                    )
+                    if income_summary.empty:
+                        st.info("目前沒有收入明細。")
+                    else:
+                        st.dataframe(
+                            income_summary,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                with expense_table:
+                    st.subheader("支出明細彙總")
+                    expense_summary = build_finance_summary_table(
+                        all_items, "支出"
+                    )
+                    if expense_summary.empty:
+                        st.info("目前沒有支出明細。")
+                    else:
+                        st.dataframe(
+                            expense_summary,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
                 subject_column, specification_column = st.columns(2)
                 with subject_column:
                     st.subheader("依科目比較")
@@ -1576,17 +1671,9 @@ elif menu_option == "四、收入與支出比較圖表":
                     if subject_chart.empty:
                         st.info("目前沒有有效的開立時間與金額資料。")
                     else:
-                        st.bar_chart(
-                            subject_chart.reset_index(),
-                            x="月份",
-                            y=["收入", "收入總計", "支出", "支出總計"],
-                            color=[
-                                "#81c784",
-                                "#2e7d32",
-                                "#e57373",
-                                "#c62828",
-                            ],
-                            sort=False,
+                        st.plotly_chart(
+                            create_monthly_finance_figure(subject_chart),
+                            use_container_width=True,
                         )
                 with specification_column:
                     st.subheader("依規格比較")
@@ -1604,15 +1691,9 @@ elif menu_option == "四、收入與支出比較圖表":
                     if specification_chart.empty:
                         st.info("目前沒有有效的開立時間與金額資料。")
                     else:
-                        st.bar_chart(
-                            specification_chart.reset_index(),
-                            x="月份",
-                            y=["收入", "收入總計", "支出", "支出總計"],
-                            color=[
-                                "#81c784",
-                                "#2e7d32",
-                                "#e57373",
-                                "#c62828",
-                            ],
-                            sort=False,
+                        st.plotly_chart(
+                            create_monthly_finance_figure(
+                                specification_chart
+                            ),
+                            use_container_width=True,
                         )
