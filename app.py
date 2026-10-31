@@ -43,6 +43,25 @@ if not st.session_state.authenticated:
 GAS_URL = st.secrets.get("GAS_URL", "")
 GAS_API_KEY = st.secrets.get("GAS_API_KEY", "")
 
+INCOME_CATEGORIES = {
+    "法會進香報名": (
+        "祭改",
+        "光明燈",
+        "太歲",
+        "五大主斗",
+        "補運",
+        "補財庫",
+        "普度",
+    ),
+    "添油香奉獻": ("添油香", "奉獻", "其他"),
+}
+EXPENSE_CATEGORIES = (
+    "法會支出",
+    "友宮拜訪支出",
+    "平時常態支出",
+    "雜項支出",
+)
+
 
 @st.cache_data(ttl=60)
 def fetch_believer_data():
@@ -136,12 +155,12 @@ def fetch_receipt_records():
 
 @st.cache_data(ttl=60)
 def fetch_receipt_options():
-    """從受 API 金鑰保護的 GAS 端點讀取收據選項與單價"""
+    """從受 API 金鑰保護的 GAS 端點讀取收入科目、規格與金額"""
     if not GAS_URL:
-        st.error("未設定 GAS_URL，無法讀取各選項金額。")
+        st.error("未設定 GAS_URL，無法讀取收入科目金額。")
         return None
     if not GAS_API_KEY:
-        st.error("未設定 GAS_API_KEY，無法讀取各選項金額。")
+        st.error("未設定 GAS_API_KEY，無法讀取收入科目金額。")
         return None
     try:
         res = requests.post(
@@ -152,10 +171,10 @@ def fetch_receipt_options():
         res.raise_for_status()
         data = res.json()
     except requests.exceptions.RequestException as e:
-        st.error(f"讀取各選項金額發生錯誤：{e}")
+        st.error(f"讀取收入科目金額發生錯誤：{e}")
         return None
     except requests.exceptions.JSONDecodeError:
-        st.error("讀取各選項金額失敗：Google Apps Script 回應不是有效的 JSON。")
+        st.error("讀取收入科目金額失敗：Google Apps Script 回應不是有效的 JSON。")
         return None
 
     if (
@@ -168,9 +187,130 @@ def fetch_receipt_options():
             if isinstance(data, dict)
             else "回傳格式錯誤"
         )
-        st.error(f"讀取各選項金額失敗：{message}")
+        st.error(f"讀取收入科目金額失敗：{message}")
         return None
     return data["options"]
+
+
+@st.cache_data(ttl=60)
+def fetch_expense_options():
+    """從受 API 金鑰保護的 GAS 端點讀取支出科目與規格"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法讀取支出科目。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，無法讀取支出科目。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={"action": "listExpenseOptions", "apiKey": GAS_API_KEY},
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"讀取支出科目發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("讀取支出科目失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if (
+        not isinstance(data, dict)
+        or data.get("status") != "success"
+        or not isinstance(data.get("options"), list)
+    ):
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"讀取支出科目失敗：{message}")
+        return None
+    return data["options"]
+
+
+def save_expense_record(expense):
+    """將支出紀錄寫入指定 Google Sheet 的支出表"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法儲存支出。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，無法儲存支出。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={
+                "action": "saveExpense",
+                "apiKey": GAS_API_KEY,
+                "expense": expense,
+            },
+            timeout=30,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"儲存支出發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("儲存支出失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if not isinstance(data, dict) or data.get("status") != "success":
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"儲存支出失敗：{message}")
+        return None
+    if not isinstance(data.get("record"), dict):
+        st.error("儲存支出失敗：Google Apps Script 未回傳支出紀錄。")
+        return None
+    st.cache_data.clear()
+    return data["record"]
+
+
+@st.cache_data(ttl=60)
+def fetch_finance_records():
+    """讀取收入表與支出表供收支比較圖表使用"""
+    if not GAS_URL:
+        st.error("未設定 GAS_URL，無法讀取收支紀錄。")
+        return None
+    if not GAS_API_KEY:
+        st.error("未設定 GAS_API_KEY，無法讀取收支紀錄。")
+        return None
+    try:
+        res = requests.post(
+            GAS_URL,
+            json={"action": "listFinanceRecords", "apiKey": GAS_API_KEY},
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"讀取收支紀錄發生錯誤：{e}")
+        return None
+    except requests.exceptions.JSONDecodeError:
+        st.error("讀取收支紀錄失敗：Google Apps Script 回應不是有效的 JSON。")
+        return None
+
+    if (
+        not isinstance(data, dict)
+        or data.get("status") != "success"
+        or not isinstance(data.get("income"), list)
+        or not isinstance(data.get("expenses"), list)
+    ):
+        message = (
+            data.get("message", "回傳格式錯誤")
+            if isinstance(data, dict)
+            else "回傳格式錯誤"
+        )
+        st.error(f"讀取收支紀錄失敗：{message}")
+        return None
+    return data
 
 
 def parse_receipt_amount(value):
@@ -347,8 +487,23 @@ def create_receipt_pdf(receipt):
 # -----------------------------------------------------------------------------
 st.sidebar.title("⛩️ 龍天宮系統選單")
 menu_option = st.sidebar.radio(
-    "請選擇功能：", ["一、信徒資料查詢", "二、各類收據開立"]
+    "請選擇功能：",
+    [
+        "一、信徒資料查詢",
+        "二、收入收據",
+        "三、支出內容",
+        "四、收入與支出比較圖表",
+    ],
 )
+submenu_option = None
+if menu_option == "二、收入收據":
+    submenu_option = st.sidebar.selectbox(
+        "收入類別：", list(INCOME_CATEGORIES)
+    )
+elif menu_option == "三、支出內容":
+    submenu_option = st.sidebar.selectbox(
+        "支出類別：", EXPENSE_CATEGORIES
+    )
 
 if st.sidebar.button("登出系統"):
     st.session_state.authenticated = False
@@ -484,8 +639,8 @@ if menu_option == "一、信徒資料查詢":
 # -----------------------------------------------------------------------------
 # 功能二：各類收據開立
 # -----------------------------------------------------------------------------
-elif menu_option == "二、各類收據開立":
-    st.header("🧾 各類收據與收執聯開立")
+elif menu_option == "二、收入收據":
+    st.header(f"🧾 收入收據｜{submenu_option}")
 
     col_l, col_r = st.columns([1, 1])
 
@@ -534,6 +689,8 @@ elif menu_option == "二、各類收據開立":
                 str(option.get("主選項", "")).strip()
                 for option in (receipt_options or [])
                 if str(option.get("主選項", "")).strip()
+                and str(option.get("主選項", "")).strip()
+                in INCOME_CATEGORIES[submenu_option]
             )
         )
         receipt_items = []
@@ -542,11 +699,12 @@ elif menu_option == "二、各類收據開立":
                 st.session_state["receipt_item_count"] = 1
 
             for item_index in range(st.session_state["receipt_item_count"]):
+                item_key_prefix = f"income_{submenu_option}_{item_index}"
                 st.markdown(f"**選項明細 {item_index + 1}**")
                 item_main = st.selectbox(
-                    "主選項",
+                    "科目",
                     main_options,
-                    key=f"receipt_main_{item_index}",
+                    key=f"{item_key_prefix}_main",
                 )
                 matching_options = [
                     option
@@ -564,15 +722,15 @@ elif menu_option == "二、各類收據開立":
                 manual_sub = ""
                 if sub_options:
                     selected_sub = st.selectbox(
-                        "次選項",
+                        "規格",
                         [""] + sub_options,
                         format_func=lambda value: value or "請選擇（或手動輸入）",
-                        key=f"receipt_sub_{item_index}",
+                        key=f"{item_key_prefix}_sub",
                     )
                 if not selected_sub:
                     manual_sub = st.text_input(
-                        "次選項（無清單項目時手動輸入）",
-                        key=f"receipt_manual_sub_{item_index}",
+                        "規格（無清單項目時手動輸入）",
+                        key=f"{item_key_prefix}_manual_sub",
                     )
                 effective_sub = selected_sub or manual_sub.strip()
 
@@ -596,8 +754,8 @@ elif menu_option == "二、各類收據開立":
                     (amount for amount in matching_prices if amount is not None),
                     None,
                 )
-                amount_key = f"receipt_amount_{item_index}"
-                signature_key = f"_receipt_price_signature_{item_index}"
+                amount_key = f"{item_key_prefix}_amount"
+                signature_key = f"_{item_key_prefix}_price_signature"
                 price_signature = f"{item_main}\u241f{lookup_sub}"
                 if st.session_state.get(signature_key) != price_signature:
                     st.session_state[amount_key] = sheet_amount or 0
@@ -610,7 +768,7 @@ elif menu_option == "二、各類收據開立":
                         min_value=1,
                         value=1,
                         step=1,
-                        key=f"receipt_people_{item_index}",
+                        key=f"{item_key_prefix}_people",
                     )
                 with item_columns[1]:
                     item_unit_amount = st.number_input(
@@ -661,7 +819,8 @@ elif menu_option == "二、各類收據開立":
             st.metric("總金額", f"NT$ {r_total:,.0f}")
         else:
             st.error(
-                "「各選項金額」工作表沒有可用的主選項，請先確認工作表資料。"
+                f"「收入科目金額」工作表在「{submenu_option}」沒有可用科目，"
+                "請確認 Google Sheet 資料及欄位。"
             )
             r_total = 0
             system_note = ""
@@ -717,6 +876,7 @@ elif menu_option == "二、各類收據開立":
                     "地址": r_address.strip(),
                     "辦理項目": full_option,
                     "收到金額": r_total,
+                    "類別": submenu_option,
                     **item_values,
                     "系統備註": system_note,
                     "經手人備註": handler_note.strip(),
@@ -729,7 +889,7 @@ elif menu_option == "二、各類收據開立":
                     st.session_state["active_receipt"] = receipt
                     st.session_state["active_receipt_qr"] = qr_bytes
                     st.success(
-                        f"收據 {receipt['收據編號']} 已建立 PDF 並加入收據總表。"
+                        f"收據 {receipt['收據編號']} 已建立 PDF，並加入收據總表與收入表。"
                     )
         receipt = st.session_state.get("active_receipt")
         if receipt:
@@ -962,6 +1122,7 @@ elif menu_option == "二、各類收據開立":
                 "姓名",
                 "地址",
                 "辦理項目",
+                "類別",
                 "主選項",
                 "次選項",
                 "選項人數",
@@ -987,3 +1148,149 @@ elif menu_option == "二、各類收據開立":
                     )
                 },
             )
+
+elif menu_option == "三、支出內容":
+    st.header(f"💸 支出內容｜{submenu_option}")
+    expense_options = fetch_expense_options()
+    matching_expenses = [
+        option
+        for option in (expense_options or [])
+        if str(option.get("科目", "")).strip() == submenu_option
+    ]
+    specifications = list(
+        dict.fromkeys(
+            str(option.get("規格", "")).strip()
+            for option in matching_expenses
+            if str(option.get("規格", "")).strip()
+        )
+    )
+
+    expense_date = st.date_input("日期", value=datetime.date.today())
+    if specifications:
+        specification = st.selectbox("規格", specifications)
+    else:
+        specification = st.text_input("規格")
+
+    selected_expense = next(
+        (
+            option
+            for option in matching_expenses
+            if str(option.get("規格", "")).strip() == specification
+        ),
+        {},
+    )
+    try:
+        suggested_amount = parse_receipt_amount(selected_expense.get("金額"))
+    except ValueError as error:
+        st.warning(f"工作表預設金額有誤：{error}請手動輸入金額。")
+        suggested_amount = None
+    amount_key = "expense_amount"
+    amount_signature_key = "_expense_amount_signature"
+    amount_signature = f"{submenu_option}\u241f{specification}"
+    if st.session_state.get(amount_signature_key) != amount_signature:
+        st.session_state[amount_key] = suggested_amount or 0
+        st.session_state[amount_signature_key] = amount_signature
+    expense_amount = st.number_input(
+        "金額（元）",
+        min_value=0,
+        step=1,
+        key=amount_key,
+    )
+    description = st.text_area("備註")
+    save_expense = st.button("儲存支出", type="primary")
+
+    if save_expense:
+        if specifications and not specification:
+            st.error("請選擇支出規格。")
+        else:
+            result = save_expense_record(
+                {
+                    "日期": expense_date.strftime("%Y-%m-%d"),
+                    "科目": submenu_option,
+                    "規格": specification.strip(),
+                    "金額(元)": int(expense_amount),
+                    "備註": description.strip(),
+                }
+            )
+            if result is not None:
+                st.success("支出已儲存至 Google Sheet「支出表」。")
+
+    st.divider()
+    st.subheader("支出紀錄")
+    finance_records = fetch_finance_records()
+    if finance_records is not None:
+        expense_df = pd.DataFrame(finance_records["expenses"])
+        if "科目" in expense_df.columns:
+            expense_df = expense_df[
+                expense_df["科目"].astype(str).str.strip() == submenu_option
+            ]
+        if expense_df.empty:
+            st.info("目前沒有此類別的支出紀錄。")
+        else:
+            st.dataframe(expense_df, use_container_width=True, hide_index=True)
+
+elif menu_option == "四、收入與支出比較圖表":
+    st.header("📊 收入與支出比較圖表")
+    finance_records = fetch_finance_records()
+    if finance_records is not None:
+        income_df = pd.DataFrame(finance_records["income"])
+        expense_df = pd.DataFrame(finance_records["expenses"])
+        amount_column = "金額(元)"
+        date_column = "日期"
+        if (
+            income_df.empty
+            and expense_df.empty
+        ):
+            st.info("目前沒有收入或支出紀錄可供比較。")
+        elif (
+            any(
+                amount_column not in frame.columns
+                or date_column not in frame.columns
+                for frame in (income_df, expense_df)
+                if not frame.empty
+            )
+        ):
+            st.error("收入表或支出表缺少「日期」或「金額(元)」欄位，無法產生圖表。")
+        else:
+            chart_frames = []
+            for label, frame in (
+                ("收入", income_df),
+                ("支出", expense_df),
+            ):
+                if frame.empty:
+                    continue
+                chart_frame = frame[[date_column, amount_column]].copy()
+                chart_frame["日期"] = pd.to_datetime(
+                    chart_frame[date_column], errors="coerce"
+                )
+                chart_frame["金額"] = pd.to_numeric(
+                    chart_frame[amount_column]
+                    .astype(str)
+                    .str.replace(",", "", regex=False)
+                    .str.replace("元", "", regex=False),
+                    errors="coerce",
+                )
+                chart_frame = chart_frame.dropna(subset=["日期", "金額"])
+                chart_frame["類別"] = label
+                chart_frames.append(chart_frame[["日期", "金額", "類別"]])
+
+            if not chart_frames:
+                st.info("找不到有效的日期與金額資料，無法產生圖表。")
+            else:
+                chart_data = pd.concat(chart_frames, ignore_index=True)
+                chart_data["月份"] = (
+                    chart_data["日期"].dt.to_period("M").astype(str)
+                )
+                monthly_totals = (
+                    chart_data.groupby(["月份", "類別"])["金額"]
+                    .sum()
+                    .unstack(fill_value=0)
+                    .reindex(columns=["收入", "支出"], fill_value=0)
+                    .sort_index()
+                )
+                st.bar_chart(monthly_totals)
+                st.dataframe(
+                    monthly_totals.reset_index(),
+                    use_container_width=True,
+                    hide_index=True,
+                )
