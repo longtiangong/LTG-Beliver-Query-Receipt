@@ -438,6 +438,7 @@ def _finance_chart_records(frame, record_type):
                         else ""
                     ),
                     "金額": float(item_amount.group(1).replace(",", "")),
+                    "系統備註": note,
                 }
             )
         if parsed_items:
@@ -450,55 +451,63 @@ def _finance_chart_records(frame, record_type):
                     "科目": " ".join(subjects),
                     "規格": " ".join(specifications),
                     "金額": amount,
+                    "系統備註": "\n".join(notes),
                 }
             )
     return records, selected_items
 
 
-def build_monthly_finance_chart_data(
-    income_df, expense_df, filter_column, filter_value
+def build_monthly_finance_panel_data(
+    frame, record_type, subject_filter, specification_filter
 ):
-    income_totals, income_items = _finance_chart_records(income_df, "收入")
-    expense_totals, expense_items = _finance_chart_records(expense_df, "支出")
-    total_rows = [
-        {"月份": row["月份"], "收入總計": row["金額"], "支出總計": 0}
-        for row in income_totals
-    ] + [
-        {"月份": row["月份"], "收入總計": 0, "支出總計": row["金額"]}
-        for row in expense_totals
-    ]
-    if not total_rows:
+    monthly_totals, items = _finance_chart_records(frame, record_type)
+    if not monthly_totals:
         return pd.DataFrame(
-            columns=["收入", "收入總計", "支出", "支出總計"]
+            columns=[
+                "系統備註",
+                "明細金額",
+                f"{record_type}總計",
+            ]
         ).rename_axis("月份")
 
     totals = (
-        pd.DataFrame(total_rows)
-        .groupby("月份")[["收入總計", "支出總計"]]
+        pd.DataFrame(monthly_totals)
+        .groupby("月份")["金額"]
         .sum()
+        .rename(f"{record_type}總計")
     )
-    item_rows = income_items + expense_items
-    selected = pd.DataFrame(item_rows)
-    if filter_value != "全部":
-        selected = selected[
-            selected[filter_column].astype(str).str.strip() == filter_value
+    selected_items = pd.DataFrame(items)
+    if subject_filter != "全部":
+        selected_items = selected_items[
+            selected_items["科目"].astype(str).str.strip() == subject_filter
         ]
-    if selected.empty:
-        filtered = pd.DataFrame(columns=["收入", "支出"], index=totals.index)
-    else:
-        filtered = (
-            selected.pivot_table(
-                index="月份",
-                columns="類型",
-                values="金額",
-                aggfunc="sum",
-                fill_value=0,
-            )
-            .reindex(index=totals.index, columns=["收入", "支出"], fill_value=0)
+    if specification_filter != "全部":
+        selected_items = selected_items[
+            selected_items["規格"].astype(str).str.strip()
+            == specification_filter
+        ]
+
+    if selected_items.empty:
+        detail_totals = pd.Series(
+            0.0, index=totals.index, name="明細金額"
         )
-    chart_data = totals.join(filtered, how="left")
-    chart_data[["收入", "支出"]] = chart_data[["收入", "支出"]].fillna(0)
-    return chart_data[["收入", "收入總計", "支出", "支出總計"]].sort_index()
+        monthly_notes = pd.Series("", index=totals.index, name="系統備註")
+    else:
+        detail_totals = (
+            selected_items.groupby("月份")["金額"]
+            .sum()
+            .reindex(totals.index, fill_value=0)
+            .rename("明細金額")
+        )
+        monthly_notes = (
+            selected_items.groupby("月份")["系統備註"]
+            .apply(lambda notes: "\n".join(dict.fromkeys(notes)))
+            .reindex(totals.index, fill_value="")
+            .rename("系統備註")
+        )
+    chart_data = pd.concat([monthly_notes, detail_totals, totals], axis=1)
+    chart_data.index.name = "月份"
+    return chart_data.sort_index()
 
 
 def build_finance_summary_table(items, record_type):
@@ -522,15 +531,18 @@ def build_finance_summary_table(items, record_type):
     return pd.DataFrame(columns=columns)
 
 
-def create_monthly_finance_figure(chart_data):
-    series_colors = {
-        "收入": "#81c784",
-        "收入總計": "#2e7d32",
-        "支出": "#e57373",
-        "支出總計": "#c62828",
-    }
+def create_monthly_finance_figure(chart_data, record_type):
+    total_column = f"{record_type}總計"
+    detail_color, total_color = (
+        ("#81c784", "#2e7d32")
+        if record_type == "收入"
+        else ("#e57373", "#c62828")
+    )
     figure = go.Figure()
-    for series, color in series_colors.items():
+    for series, color in (
+        ("明細金額", detail_color),
+        (total_column, total_color),
+    ):
         figure.add_trace(
             go.Bar(
                 x=chart_data.index.tolist(),
@@ -1531,12 +1543,8 @@ elif menu_option == "三、支出內容":
     finance_records = fetch_finance_records()
     if finance_records is not None:
         expense_df = pd.DataFrame(finance_records["expenses"])
-        if "科目" in expense_df.columns:
-            expense_df = expense_df[
-                expense_df["科目"].astype(str).str.strip() == submenu_option
-            ]
         if expense_df.empty:
-            st.info("目前沒有此類別的支出紀錄。")
+            st.info("目前沒有支出紀錄。")
         else:
             expense_columns = [
                 "收據編號",
@@ -1550,6 +1558,8 @@ elif menu_option == "三、支出內容":
                 "系統備註",
                 "經手人備註",
                 "PDF連結",
+                "支出日期",
+                "經手人",
             ]
             missing_columns = [
                 column
@@ -1607,24 +1617,37 @@ elif menu_option == "四、收入與支出比較圖表":
                 _, income_items = _finance_chart_records(income_df, "收入")
                 _, expense_items = _finance_chart_records(expense_df, "支出")
                 all_items = income_items + expense_items
-                subject_options = sorted(
+                income_subject_options = sorted(
                     {
                         item["科目"]
-                        for item in all_items
+                        for item in income_items
                         if item["科目"]
                     }
                 )
-                specification_options = sorted(
+                income_specification_options = sorted(
                     {
                         item["規格"]
-                        for item in all_items
+                        for item in income_items
+                        if item["規格"]
+                    }
+                )
+                expense_subject_options = sorted(
+                    {
+                        item["科目"]
+                        for item in expense_items
+                        if item["科目"]
+                    }
+                )
+                expense_specification_options = sorted(
+                    {
+                        item["規格"]
+                        for item in expense_items
                         if item["規格"]
                     }
                 )
                 st.caption(
-                    "月份依收據開立時間（YYYY-MM）彙整；淺色柱為所選科目／規格金額，"
-                    "深色柱為當月收入或支出總計。收入為綠色，支出為紅色；"
-                    "四組柱子並排顯示。"
+                    "月份依開立時間（YYYY-MM）彙整。各側圖表分別顯示所選科目／規格金額、"
+                    "該側收支總計及系統備註。"
                 )
                 income_table, expense_table = st.columns(2)
                 with income_table:
@@ -1654,46 +1677,89 @@ elif menu_option == "四、收入與支出比較圖表":
                             hide_index=True,
                         )
 
-                subject_column, specification_column = st.columns(2)
-                with subject_column:
-                    st.subheader("依科目比較")
-                    selected_subject = st.selectbox(
-                        "篩選科目",
-                        ["全部"] + subject_options,
-                        key="finance_chart_subject",
+                income_chart_column, expense_chart_column = st.columns(2)
+                with income_chart_column:
+                    st.subheader("收入比較")
+                    selected_income_subject = st.selectbox(
+                        "收入科目",
+                        ["全部"] + income_subject_options,
+                        key="income_chart_subject",
                     )
-                    subject_chart = build_monthly_finance_chart_data(
+                    selected_income_specification = st.selectbox(
+                        "收入規格",
+                        ["全部"] + income_specification_options,
+                        key="income_chart_specification",
+                    )
+                    income_chart = build_monthly_finance_panel_data(
                         income_df,
-                        expense_df,
-                        "科目",
-                        selected_subject,
+                        "收入",
+                        selected_income_subject,
+                        selected_income_specification,
                     )
-                    if subject_chart.empty:
-                        st.info("目前沒有有效的開立時間與金額資料。")
-                    else:
-                        st.plotly_chart(
-                            create_monthly_finance_figure(subject_chart),
-                            use_container_width=True,
-                        )
-                with specification_column:
-                    st.subheader("依規格比較")
-                    selected_specification = st.selectbox(
-                        "篩選規格",
-                        ["全部"] + specification_options,
-                        key="finance_chart_specification",
-                    )
-                    specification_chart = build_monthly_finance_chart_data(
-                        income_df,
-                        expense_df,
-                        "規格",
-                        selected_specification,
-                    )
-                    if specification_chart.empty:
+                    if income_chart.empty:
                         st.info("目前沒有有效的開立時間與金額資料。")
                     else:
                         st.plotly_chart(
                             create_monthly_finance_figure(
-                                specification_chart
+                                income_chart, "收入"
                             ),
                             use_container_width=True,
+                        )
+                        st.dataframe(
+                            income_chart.reset_index()[
+                                ["月份", "系統備註", "明細金額", "收入總計"]
+                            ],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "明細金額": st.column_config.NumberColumn(
+                                    "收入明細金額", format="NT$ %.0f"
+                                ),
+                                "收入總計": st.column_config.NumberColumn(
+                                    "收入總計", format="NT$ %.0f"
+                                ),
+                            },
+                        )
+
+                with expense_chart_column:
+                    st.subheader("支出比較")
+                    selected_expense_subject = st.selectbox(
+                        "支出科目",
+                        ["全部"] + expense_subject_options,
+                        key="expense_chart_subject",
+                    )
+                    selected_expense_specification = st.selectbox(
+                        "支出規格",
+                        ["全部"] + expense_specification_options,
+                        key="expense_chart_specification",
+                    )
+                    expense_chart = build_monthly_finance_panel_data(
+                        expense_df,
+                        "支出",
+                        selected_expense_subject,
+                        selected_expense_specification,
+                    )
+                    if expense_chart.empty:
+                        st.info("目前沒有有效的開立時間與金額資料。")
+                    else:
+                        st.plotly_chart(
+                            create_monthly_finance_figure(
+                                expense_chart, "支出"
+                            ),
+                            use_container_width=True,
+                        )
+                        st.dataframe(
+                            expense_chart.reset_index()[
+                                ["月份", "系統備註", "明細金額", "支出總計"]
+                            ],
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "明細金額": st.column_config.NumberColumn(
+                                    "支出明細金額", format="NT$ %.0f"
+                                ),
+                                "支出總計": st.column_config.NumberColumn(
+                                    "支出總計", format="NT$ %.0f"
+                                ),
+                            },
                         )
