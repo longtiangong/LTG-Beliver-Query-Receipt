@@ -23,29 +23,35 @@ var EXPENSE_OPTIONS_SHEET_NAME = "支出科目";
 var INCOME_SHEET_NAME = "收入表";
 var EXPENSE_SHEET_NAME = "支出表";
 var INCOME_HEADERS = [
-  "日期",
-  "類別",
+  "收據編號",
+  "開立時間",
+  "姓名",
+  "地址",
+  "辦理項目",
   "科目",
   "規格",
   "金額(元)",
-  "姓名",
+  "選項人數",
   "系統備註",
   "經手人備註",
-  "備註",
-  "收據編號"
+  "PDF連結",
+  "收入日期",
+  "經手人"
 ];
 var EXPENSE_HEADERS = [
-  "日期",
-  "類別",
+  "收據編號",
+  "開立時間",
+  "姓名",
+  "辦理項目",
   "科目",
   "規格",
   "金額(元)",
-  "姓名",
+  "詳細內容",
   "系統備註",
   "經手人備註",
-  "備註",
-  "收據編號",
-  "PDF連結"
+  "PDF連結",
+  "支出日期",
+  "經手人"
 ];
 
 function getBelieverSheet() {
@@ -135,18 +141,54 @@ function getFinanceLedgerSheet(sheetName, createIfMissing) {
     return sheet;
   }
 
-  var headers = sheet
-    .getRange(1, 1, 1, sheet.getLastColumn())
-    .getValues()[0];
-  requiredHeaders.forEach(function(requiredHeader) {
-    var exists = headers.some(function(header) {
-      return normalizeHeader(header) === normalizeHeader(requiredHeader);
+  var data = sheet.getDataRange().getValues();
+  var existingHeaders = data[0].map(normalizeHeader);
+  if (
+    JSON.stringify(existingHeaders) ===
+    JSON.stringify(requiredHeaders.map(normalizeHeader))
+  ) {
+    return sheet;
+  }
+
+  var aliases = {
+    "地址": ["住址"],
+    "科目": ["主選項"],
+    "規格": ["次選項"],
+    "金額(元)": ["收到金額", "金額"],
+    "選項人數": ["人數"],
+    "收入日期": ["日期"],
+    "支出日期": ["日期"],
+    "經手人備註": ["備註"],
+    "詳細內容": ["明細", "內容", "說明"]
+  };
+  var migratedRows = data.slice(1).map(function(row) {
+    return requiredHeaders.map(function(header) {
+      if (header === "辦理項目") {
+        return sheetName === INCOME_SHEET_NAME ? "收入" : "支出";
+      }
+      var candidates = [header].concat(aliases[header] || []);
+      var column = candidates
+        .map(function(candidate) {
+          return existingHeaders.indexOf(normalizeHeader(candidate));
+        })
+        .find(function(index) {
+          return index !== -1;
+        });
+      if (column !== undefined) {
+        return row[column];
+      }
+      return "";
     });
-    if (!exists) {
-      headers.push(requiredHeader);
-      sheet.getRange(1, headers.length).setValue(requiredHeader);
-    }
   });
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, requiredHeaders.length).setValues([
+    requiredHeaders
+  ]);
+  if (migratedRows.length) {
+    sheet
+      .getRange(2, 1, migratedRows.length, requiredHeaders.length)
+      .setValues(migratedRows);
+  }
   return sheet;
 }
 
@@ -172,6 +214,31 @@ function getFinanceLedgerRecords(sheetName) {
     });
     return record;
   });
+}
+
+function getReceiptPdfUrl(receiptId) {
+  var sheetNames = [INCOME_SHEET_NAME, EXPENSE_SHEET_NAME];
+  for (var i = 0; i < sheetNames.length; i++) {
+    var record = getFinanceLedgerRecords(sheetNames[i]).find(function(item) {
+      return String(item["收據編號"] || "") === receiptId;
+    });
+    if (record && record["PDF連結"]) {
+      var pdfUrl = String(record["PDF連結"]);
+      if (!/^https:\/\/drive\.google\.com\//.test(pdfUrl)) {
+        throw new Error("收據 PDF 連結格式錯誤。");
+      }
+      return pdfUrl;
+    }
+  }
+  return "";
+}
+
+function escapeHtmlAttribute(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function appendFinanceLedgerRecord(sheetName, values) {
@@ -327,17 +394,25 @@ function saveReceiptRecord(receipt, pdfBase64) {
     "開立時間": createdAt,
     "姓名": String(receipt["姓名"]),
     "地址": String(receipt["地址"] || ""),
-    "辦理項目": String(receipt["辦理項目"] || ""),
+    "辦理項目": "收入",
     "收到金額": amount,
     "備註": String(receipt["備註"] || ""),
-    "主選項": String(receipt["主選項"] || ""),
-    "次選項": String(receipt["次選項"] || ""),
+    "主選項": String(receipt["科目"] || receipt["主選項"] || ""),
+    "次選項": String(receipt["規格"] || receipt["次選項"] || ""),
     "類別": String(receipt["類別"] || ""),
     "選項人數": String(receipt["選項人數"] || receipt["人數"] || ""),
     "系統備註": String(receipt["系統備註"] || ""),
-    "經手人備註": String(receipt["經手人備註"] || ""),
+    "經手人備註": String(
+      receipt["經手人備註"] || receipt["備註"] || ""
+    ),
     "PDF連結": ""
   };
+  record["科目"] = record["主選項"];
+  record["規格"] = record["次選項"];
+  record["經手人"] = String(receipt["經手人"] || "");
+  record["收入日期"] = String(
+    receipt["收入日期"] || createdAt.substring(0, 10)
+  );
 
   var pdfFile;
   var rowNumber = 0;
@@ -359,14 +434,22 @@ function saveReceiptRecord(receipt, pdfBase64) {
       return value === undefined || value === null ? "" : value;
     }));
     financeAppend = appendFinanceLedgerRecord(INCOME_SHEET_NAME, {
-      "日期": createdAt.substring(0, 10),
-      "類別": String(receipt["類別"] || ""),
-      "科目": String(receipt["主選項"] || ""),
-      "規格": String(receipt["次選項"] || ""),
-      "金額(元)": amount,
+      "收據編號": receiptId,
+      "開立時間": createdAt,
       "姓名": String(receipt["姓名"]),
-      "備註": String(receipt["經手人備註"] || receipt["備註"] || ""),
-      "收據編號": receiptId
+      "地址": String(receipt["地址"] || ""),
+      "辦理項目": "收入",
+      "科目": String(receipt["科目"] || receipt["主選項"] || ""),
+      "規格": String(receipt["規格"] || receipt["次選項"] || ""),
+      "金額(元)": amount,
+      "選項人數": String(receipt["選項人數"] || receipt["人數"] || ""),
+      "系統備註": String(receipt["系統備註"] || ""),
+      "經手人備註": String(
+        receipt["經手人備註"] || receipt["備註"] || ""
+      ),
+      "PDF連結": record["PDF連結"],
+      "收入日期": record["收入日期"],
+      "經手人": record["經手人"]
     });
   } catch (saveError) {
     if (
@@ -431,17 +514,19 @@ function saveExpenseRecord(expense, pdfBase64) {
     }
   }
   var record = {
-    "日期": date,
-    "類別": String(expense["科目"]),
+    "收據編號": receiptId,
+    "開立時間": String(expense["開立時間"] || ""),
+    "姓名": String(expense["姓名"]),
+    "辦理項目": "支出",
     "科目": String(expense["科目"]),
     "規格": String(expense["規格"] || ""),
     "金額(元)": amount,
-    "姓名": String(expense["姓名"]),
+    "詳細內容": String(expense["詳細內容"] || ""),
     "系統備註": String(expense["系統備註"] || ""),
     "經手人備註": String(expense["經手人備註"] || ""),
-    "備註": String(expense["備註"] || ""),
-    "收據編號": receiptId,
-    "PDF連結": ""
+    "PDF連結": "",
+    "支出日期": date,
+    "經手人": String(expense["經手人"] || "")
   };
 
   var pdfFile;
@@ -473,6 +558,18 @@ function saveExpenseRecord(expense, pdfBase64) {
 
 function doGet(e) {
   try {
+    if (e && e.parameter && e.parameter.receipt) {
+      var pdfUrl = getReceiptPdfUrl(String(e.parameter.receipt));
+      if (!pdfUrl) {
+        throw new Error("找不到此收據的 PDF。");
+      }
+      var safePdfUrl = escapeHtmlAttribute(pdfUrl);
+      return HtmlService.createHtmlOutput(
+        '<!doctype html><meta charset="utf-8">' +
+        '<meta http-equiv="refresh" content="0;url=' + safePdfUrl + '">' +
+        '<p><a href="' + safePdfUrl + '">開啟收據 PDF</a></p>'
+      );
+    }
     var sheet = getBelieverSheet();
     var data = sheet.getDataRange().getValues();
 
