@@ -1,6 +1,7 @@
 import base64
 import datetime
 import html
+import re
 import secrets
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -50,6 +51,7 @@ INCOME_CATEGORIES = {
         "祭改",
         "光明燈",
         "太歲",
+        "年斗",
         "五大主斗",
         "補運",
         "補財庫",
@@ -384,6 +386,120 @@ def calculate_expense_item(subject, specification, detail, amount):
     return item_amount, system_note
 
 
+def _chart_amount(value):
+    text = str(value or "").strip().replace(",", "").replace("元", "")
+    try:
+        amount = Decimal(text)
+    except InvalidOperation:
+        return None
+    if not amount.is_finite():
+        return None
+    return float(amount)
+
+
+def _chart_lines(value):
+    if value is None or pd.isna(value):
+        return []
+    return [line.strip() for line in str(value).splitlines()]
+
+
+def _finance_chart_records(frame, record_type):
+    records = []
+    selected_items = []
+    for row in frame.to_dict("records"):
+        created_at = pd.to_datetime(row.get("開立時間"), errors="coerce")
+        amount = _chart_amount(row.get("金額(元)"))
+        if pd.isna(created_at) or amount is None:
+            continue
+        month = created_at.strftime("%Y-%m")
+        records.append({"月份": month, "金額": amount})
+
+        subjects = _chart_lines(row.get("科目"))
+        specifications = _chart_lines(row.get("規格"))
+        notes = _chart_lines(row.get("系統備註"))
+        parsed_items = []
+        for index, note in enumerate(notes):
+            item_amount = re.search(r"金額為\s*([\d,]+)\s*元", note)
+            if not item_amount:
+                continue
+            parsed_items.append(
+                {
+                    "月份": month,
+                    "類型": record_type,
+                    "科目": (
+                        str(row.get("科目") or "").strip()
+                        if record_type == "支出"
+                        else (subjects[index] if index < len(subjects) else "")
+                    ),
+                    "規格": (
+                        specifications[index]
+                        if index < len(specifications)
+                        else ""
+                    ),
+                    "金額": float(item_amount.group(1).replace(",", "")),
+                }
+            )
+        if parsed_items:
+            selected_items.extend(parsed_items)
+        else:
+            selected_items.append(
+                {
+                    "月份": month,
+                    "類型": record_type,
+                    "科目": " ".join(subjects),
+                    "規格": " ".join(specifications),
+                    "金額": amount,
+                }
+            )
+    return records, selected_items
+
+
+def build_monthly_finance_chart_data(
+    income_df, expense_df, filter_column, filter_value
+):
+    income_totals, income_items = _finance_chart_records(income_df, "收入")
+    expense_totals, expense_items = _finance_chart_records(expense_df, "支出")
+    total_rows = [
+        {"月份": row["月份"], "收入總計": row["金額"], "支出總計": 0}
+        for row in income_totals
+    ] + [
+        {"月份": row["月份"], "收入總計": 0, "支出總計": row["金額"]}
+        for row in expense_totals
+    ]
+    if not total_rows:
+        return pd.DataFrame(
+            columns=["收入", "收入總計", "支出", "支出總計"]
+        ).rename_axis("月份")
+
+    totals = (
+        pd.DataFrame(total_rows)
+        .groupby("月份")[["收入總計", "支出總計"]]
+        .sum()
+    )
+    item_rows = income_items + expense_items
+    selected = pd.DataFrame(item_rows)
+    if filter_value != "全部":
+        selected = selected[
+            selected[filter_column].astype(str).str.strip() == filter_value
+        ]
+    if selected.empty:
+        filtered = pd.DataFrame(columns=["收入", "支出"], index=totals.index)
+    else:
+        filtered = (
+            selected.pivot_table(
+                index="月份",
+                columns="類型",
+                values="金額",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            .reindex(index=totals.index, columns=["收入", "支出"], fill_value=0)
+        )
+    chart_data = totals.join(filtered, how="left")
+    chart_data[["收入", "支出"]] = chart_data[["收入", "支出"]].fillna(0)
+    return chart_data[["收入", "收入總計", "支出", "支出總計"]].sort_index()
+
+
 def build_receipt_display_fields(receipt):
     fields = [
         ("開立時間", receipt.get("開立時間", "")),
@@ -558,7 +674,7 @@ def create_receipt_pdf(receipt):
                 text_y -= leading
 
         signature_y = copy_bottom + 14
-        pdf.drawString(text_x, signature_y + 5, "經手人/蓋章：")
+        pdf.drawString(text_x, signature_y + 5, "收訖/蓋章：")
         pdf.line(text_x + 52, signature_y + 3, text_x + 120, signature_y + 3)
         seal_size = 42
         seal_x = page_width - margin - 10 - seal_size
@@ -635,13 +751,13 @@ def render_receipt_preview(receipt, qr_bytes, receipt_type):
             <section class="receipt-copy">
                 <h2>⛩️ 龍天宮 {html.escape(receipt_type)}收執聯</h2>
                 <div class="copy-content">{details}<img class="qr-code" src="{qr_data_uri}" alt="收據 QR code"></div>
-                <div class="signature"><span><b>經手人/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
+                <div class="signature"><span><b>收訖/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
             </section>
             <div class="cut-line">沿虛線裁切</div>
             <section class="receipt-copy">
                 <h2>⛩️ 龍天宮 {html.escape(receipt_type)}存根聯</h2>
                 <div class="copy-content">{details}<img class="qr-code" src="{qr_data_uri}" alt="收據 QR code"></div>
-                <div class="signature"><span><b>經手人/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
+                <div class="signature"><span><b>收訖/蓋章：</b> ______________</span><span class="seal">龍天宮<br>管委會</span></div>
             </section>
         </div>
         <button class="print-button" onclick="window.print()">🖨️ 列印收執聯/存根聯</button>
@@ -816,15 +932,6 @@ elif menu_option == "二、收入收據":
     with col_l:
         st.subheader("1. 輸入收據資料")
         r_name = st.text_input("大德姓名", key="receipt_name")
-        income_date = st.date_input(
-            "收入日期",
-            value=datetime.date.today(),
-            key="receipt_income_date",
-        )
-        income_handler = st.text_input(
-            "經手人",
-            key="receipt_income_handler",
-        )
 
         if r_name != st.session_state.get("_receipt_lookup_name"):
             st.session_state["receipt_address"] = ""
@@ -1078,8 +1185,6 @@ elif menu_option == "二、收入收據":
                     "系統備註": system_note,
                     "經手人備註": handler_note.strip(),
                     "備註": handler_note.strip(),
-                    "收入日期": income_date.strftime("%Y-%m-%d"),
-                    "經手人": income_handler.strip(),
                 }
                 pdf_bytes = create_receipt_pdf(receipt_draft)
                 receipt = save_receipt_record(receipt_draft, pdf_bytes)
@@ -1123,8 +1228,6 @@ elif menu_option == "二、收入收據":
             "系統備註",
             "經手人備註",
             "PDF連結",
-            "收入日期",
-            "經手人",
         ]
         if income_df.empty:
             st.info("目前尚無收入紀錄。")
@@ -1170,10 +1273,6 @@ elif menu_option == "三、支出內容":
     with expense_col:
         st.subheader("1. 輸入支出資料")
         expense_name = st.text_input("大德姓名", key="expense_name")
-        expense_date = st.date_input(
-            "支出日期", value=datetime.date.today(), key="expense_date"
-        )
-        expense_handler = st.text_input("經手人", key="expense_handler")
         if "expense_item_count" not in st.session_state:
             st.session_state["expense_item_count"] = 1
 
@@ -1304,7 +1403,6 @@ elif menu_option == "三、支出內容":
                     "收據編號": receipt_id,
                     "QR連結": build_receipt_qr_url(receipt_id),
                     "開立時間": opened_at,
-                    "支出日期": expense_date.strftime("%Y-%m-%d"),
                     "姓名": expense_name.strip(),
                     "辦理項目": "支出",
                     "收到金額": expense_total,
@@ -1318,13 +1416,12 @@ elif menu_option == "三、支出內容":
                     "系統備註": expense_system_note,
                     "經手人備註": expense_handler_note.strip(),
                     "備註": expense_handler_note.strip(),
-                    "經手人": expense_handler.strip(),
                 }
                 pdf_bytes = create_receipt_pdf(expense_draft)
                 result = save_expense_record(
                     {
                         "收據編號": receipt_id,
-                        "日期": expense_date.strftime("%Y-%m-%d"),
+                        "日期": opened_at[:10],
                         "開立時間": opened_at,
                         "科目": submenu_option,
                         "規格": expense_draft["規格"],
@@ -1334,7 +1431,6 @@ elif menu_option == "三、支出內容":
                         "系統備註": expense_system_note,
                         "經手人備註": expense_handler_note.strip(),
                         "備註": expense_handler_note.strip(),
-                        "經手人": expense_handler.strip(),
                     },
                     pdf_bytes,
                 )
@@ -1388,8 +1484,6 @@ elif menu_option == "三、支出內容":
                 "系統備註",
                 "經手人備註",
                 "PDF連結",
-                "支出日期",
-                "經手人",
             ]
             missing_columns = [
                 column
@@ -1419,66 +1513,106 @@ elif menu_option == "四、收入與支出比較圖表":
     if finance_records is not None:
         income_df = pd.DataFrame(finance_records["income"])
         expense_df = pd.DataFrame(finance_records["expenses"])
-        amount_column = "金額(元)"
-        if (
-            income_df.empty
-            and expense_df.empty
-        ):
+        if income_df.empty and expense_df.empty:
             st.info("目前沒有收入或支出紀錄可供比較。")
-        elif (
-            any(
-                amount_column not in frame.columns
-                or date_column not in frame.columns
-                for frame, date_column in (
-                    (income_df, "收入日期"),
-                    (expense_df, "支出日期"),
-                )
-                if not frame.empty
-            )
-        ):
-            st.error(
-                "收入表或支出表缺少日期或「金額(元)」欄位，無法產生圖表。"
-            )
         else:
-            chart_frames = []
-            for label, frame, date_column in (
-                ("收入", income_df, "收入日期"),
-                ("支出", expense_df, "支出日期"),
-            ):
-                if frame.empty:
-                    continue
-                chart_frame = frame[[date_column, amount_column]].copy()
-                chart_frame["日期"] = pd.to_datetime(
-                    chart_frame[date_column], errors="coerce"
+            required_chart_columns = {
+                "開立時間",
+                "科目",
+                "規格",
+                "金額(元)",
+                "系統備註",
+            }
+            missing_columns = sorted(
+                {
+                    column
+                    for frame in (income_df, expense_df)
+                    if not frame.empty
+                    for column in required_chart_columns
+                    if column not in frame.columns
+                }
+            )
+            if missing_columns:
+                st.error(
+                    "收入表或支出表缺少圖表欄位："
+                    + "、".join(missing_columns)
                 )
-                chart_frame["金額"] = pd.to_numeric(
-                    chart_frame[amount_column]
-                    .astype(str)
-                    .str.replace(",", "", regex=False)
-                    .str.replace("元", "", regex=False),
-                    errors="coerce",
-                )
-                chart_frame = chart_frame.dropna(subset=["日期", "金額"])
-                chart_frame["類別"] = label
-                chart_frames.append(chart_frame[["日期", "金額", "類別"]])
-
-            if not chart_frames:
-                st.info("找不到有效的日期與金額資料，無法產生圖表。")
             else:
-                chart_data = pd.concat(chart_frames, ignore_index=True)
-                chart_data["月份"] = (
-                    chart_data["日期"].dt.to_period("M").astype(str)
+                _, income_items = _finance_chart_records(income_df, "收入")
+                _, expense_items = _finance_chart_records(expense_df, "支出")
+                all_items = income_items + expense_items
+                subject_options = sorted(
+                    {
+                        item["科目"]
+                        for item in all_items
+                        if item["科目"]
+                    }
                 )
-                monthly_totals = (
-                    chart_data.groupby(["月份", "類別"])["金額"]
-                    .sum()
-                    .unstack(fill_value=0)
-                    .reindex(columns=["收入", "支出"], fill_value=0)
-                    .sort_index()
+                specification_options = sorted(
+                    {
+                        item["規格"]
+                        for item in all_items
+                        if item["規格"]
+                    }
                 )
-                st.bar_chart(monthly_totals)
-                st.dataframe(
-                    monthly_totals.reset_index(),
-                    use_container_width=True,
-                    hide_index=True,
+                st.caption(
+                    "月份依收據開立時間（YYYY-MM）彙整；淺色柱為所選科目／規格金額，"
+                    "深色柱為當月收入或支出總計。收入為綠色，支出為紅色。"
                 )
+                subject_column, specification_column = st.columns(2)
+                with subject_column:
+                    st.subheader("依科目比較")
+                    selected_subject = st.selectbox(
+                        "篩選科目",
+                        ["全部"] + subject_options,
+                        key="finance_chart_subject",
+                    )
+                    subject_chart = build_monthly_finance_chart_data(
+                        income_df,
+                        expense_df,
+                        "科目",
+                        selected_subject,
+                    )
+                    if subject_chart.empty:
+                        st.info("目前沒有有效的開立時間與金額資料。")
+                    else:
+                        st.bar_chart(
+                            subject_chart.reset_index(),
+                            x="月份",
+                            y=["收入", "收入總計", "支出", "支出總計"],
+                            color=[
+                                "#81c784",
+                                "#2e7d32",
+                                "#e57373",
+                                "#c62828",
+                            ],
+                            sort=False,
+                        )
+                with specification_column:
+                    st.subheader("依規格比較")
+                    selected_specification = st.selectbox(
+                        "篩選規格",
+                        ["全部"] + specification_options,
+                        key="finance_chart_specification",
+                    )
+                    specification_chart = build_monthly_finance_chart_data(
+                        income_df,
+                        expense_df,
+                        "規格",
+                        selected_specification,
+                    )
+                    if specification_chart.empty:
+                        st.info("目前沒有有效的開立時間與金額資料。")
+                    else:
+                        st.bar_chart(
+                            specification_chart.reset_index(),
+                            x="月份",
+                            y=["收入", "收入總計", "支出", "支出總計"],
+                            color=[
+                                "#81c784",
+                                "#2e7d32",
+                                "#e57373",
+                                "#c62828",
+                            ],
+                            sort=False,
+                        )
