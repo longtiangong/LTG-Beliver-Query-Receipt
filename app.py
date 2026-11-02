@@ -584,7 +584,6 @@ def build_receipt_display_fields(receipt):
         ("開立時間", receipt.get("開立時間", "")),
         ("收據編號", receipt.get("收據編號", "")),
         ("信徒姓名", receipt.get("姓名", "")),
-        ("經手人", receipt.get("經手人") or "未填"),
     ]
     if "地址" in receipt:
         fields.append(("地址", receipt.get("地址") or "無"))
@@ -608,6 +607,7 @@ def build_receipt_display_fields(receipt):
     fields.extend(
         [
             ("系統備註", receipt.get("系統備註") or "無"),
+            ("經手人", receipt.get("經手人") or "未填"),
             (
                 "經手人備註",
                 receipt.get("經手人備註") or receipt.get("備註") or "無",
@@ -1212,12 +1212,12 @@ elif menu_option == "二、收入收據":
             r_total = 0
             system_note = ""
 
+        handler = st.text_input("經手人", key="receipt_handler")
         handler_note = st.text_area(
             "經手人備註",
             key="receipt_handler_note",
             placeholder="可在此輸入其他備註...",
         )
-        handler = st.text_input("經手人", key="receipt_handler")
 
         # * 2 收據金額輸入、總表永久保存及 QR code 生成
         generate_btn = st.button(
@@ -1452,11 +1452,11 @@ elif menu_option == "三、支出內容":
             key="expense_system_note_display",
         )
         st.metric("總金額", f"NT$ {expense_total:,.0f}")
-        expense_handler_note = st.text_area(
-            "經手人備註", key="expense_handler_note"
-        )
         expense_handler = st.text_input(
             "經手人", key="expense_handler"
+        )
+        expense_handler_note = st.text_area(
+            "經手人備註", key="expense_handler_note"
         )
         save_expense = st.button(
             "🧾 登記支出並準備列印",
