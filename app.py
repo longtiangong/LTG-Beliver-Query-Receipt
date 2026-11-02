@@ -584,6 +584,7 @@ def build_receipt_display_fields(receipt):
         ("開立時間", receipt.get("開立時間", "")),
         ("收據編號", receipt.get("收據編號", "")),
         ("信徒姓名", receipt.get("姓名", "")),
+        ("經手人", receipt.get("經手人") or "未填"),
     ]
     if "地址" in receipt:
         fields.append(("地址", receipt.get("地址") or "無"))
@@ -1216,6 +1217,7 @@ elif menu_option == "二、收入收據":
             key="receipt_handler_note",
             placeholder="可在此輸入其他備註...",
         )
+        handler = st.text_input("經手人", key="receipt_handler")
 
         # * 2 收據金額輸入、總表永久保存及 QR code 生成
         generate_btn = st.button(
@@ -1263,6 +1265,7 @@ elif menu_option == "二、收入收據":
                     **item_values,
                     "系統備註": system_note,
                     "經手人備註": handler_note.strip(),
+                    "經手人": handler.strip(),
                     "備註": handler_note.strip(),
                 }
                 pdf_bytes = create_receipt_pdf(receipt_draft)
@@ -1307,6 +1310,8 @@ elif menu_option == "二、收入收據":
             "系統備註",
             "經手人備註",
             "PDF連結",
+            "收入日期",
+            "經手人",
         ]
         if income_df.empty:
             st.info("目前尚無收入紀錄。")
@@ -1450,6 +1455,9 @@ elif menu_option == "三、支出內容":
         expense_handler_note = st.text_area(
             "經手人備註", key="expense_handler_note"
         )
+        expense_handler = st.text_input(
+            "經手人", key="expense_handler"
+        )
         save_expense = st.button(
             "🧾 登記支出並準備列印",
             type="primary",
@@ -1494,6 +1502,7 @@ elif menu_option == "三、支出內容":
                     ),
                     "系統備註": expense_system_note,
                     "經手人備註": expense_handler_note.strip(),
+                    "經手人": expense_handler.strip(),
                     "備註": expense_handler_note.strip(),
                 }
                 pdf_bytes = create_receipt_pdf(expense_draft)
@@ -1509,6 +1518,7 @@ elif menu_option == "三、支出內容":
                         "金額(元)": expense_total,
                         "系統備註": expense_system_note,
                         "經手人備註": expense_handler_note.strip(),
+                        "經手人": expense_handler.strip(),
                         "備註": expense_handler_note.strip(),
                     },
                     pdf_bytes,
