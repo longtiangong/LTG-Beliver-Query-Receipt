@@ -73,6 +73,14 @@ def _normalize_option_text(value):
     return "".join(str(value or "").split()).casefold()
 
 
+def _normalize_believer_phone(value):
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _normalize_believer_address(value):
+    return "".join(str(value or "").split()).casefold()
+
+
 def build_receipt_qr_url(receipt_id):
     separator = "&" if "?" in GAS_URL else "?"
     return f"{GAS_URL}{separator}{urlencode({'receipt': receipt_id})}"
@@ -854,14 +862,19 @@ st.sidebar.title("⛩️ 龍天宮系統選單")
 menu_option = st.sidebar.radio(
     "請選擇功能：",
     [
-        "一、信徒資料查詢",
+        "一、信徒資料",
         "二、收入收據",
         "三、支出內容",
         "四、收入與支出比較圖表",
     ],
 )
 submenu_option = None
-if menu_option == "二、收入收據":
+if menu_option == "一、信徒資料":
+    submenu_option = st.sidebar.selectbox(
+        "信徒資料功能：",
+        ["查詢全家人資料", "新增信徒資料"],
+    )
+elif menu_option == "二、收入收據":
     submenu_option = st.sidebar.selectbox(
         "收入類別：", list(INCOME_CATEGORIES)
     )
@@ -875,22 +888,17 @@ if st.sidebar.button("登出系統"):
     st.rerun()
 
 # -----------------------------------------------------------------------------
-# 功能一：信徒資料查詢
+# 功能一：信徒資料查詢與新增
 # -----------------------------------------------------------------------------
-if menu_option == "一、信徒資料查詢":
-    st.header("🔍 信徒資料查詢與新增")
-
-    search_name = st.text_input("請輸入信徒姓名進行查詢：").strip()
-
+if menu_option == "一、信徒資料" and submenu_option == "查詢全家人資料":
+    st.header("🔍 查詢全家人資料")
+    search_name = st.text_input(
+        "請輸入信徒姓名進行查詢：", key="believer_query_name"
+    ).strip()
     if "data_unlocked" not in st.session_state:
         st.session_state.data_unlocked = False
 
     if search_name:
-        df = fetch_believer_data()
-        if df is None:
-            st.stop()
-
-        # 第二重密碼檢核（保護調閱資料安全）
         if not st.session_state.data_unlocked:
             st.warning("⚠️ 檢閱詳細信徒資料需要輸入第二重密碼")
             sec_pwd = st.text_input(
@@ -905,101 +913,154 @@ if menu_option == "一、信徒資料查詢":
                     st.error("第二重密碼錯誤！")
             st.stop()
 
-        # 搜尋符合特姓名之資料
-        if not df.empty and "姓名" in df.columns:
-            matched_df = df[
+        df = fetch_believer_data()
+        if df is None:
+            st.stop()
+
+        if df.empty or "姓名" not in df.columns:
+            st.warning("目前沒有信徒資料，請先至「新增信徒資料」建立相關資料。")
+        else:
+            name_matches = df[
                 df["姓名"].astype(str).str.strip() == search_name
             ]
-        else:
-            matched_df = pd.DataFrame()
-
-        # 查有資料 (顯示同名同姓的所有筆數)
-        if not matched_df.empty:
-            count = len(matched_df)
-            st.success(f"共找到 {count} 位名為「{search_name}」的信徒資料：")
-
-            # 定義主要欄位順序以確保顯示穩定
-            expected_cols = [
-                "姓名",
-                "生辰年月日",
-                "生時",
-                "住址",
-                "編號",
-                "手機",
-                "2026丁/口",
-                "2026光明燈",
-                "2026太歲",
-            ]
-            display_cols = [c for c in expected_cols if c in matched_df.columns]
-            other_cols = [
-                c for c in matched_df.columns if c not in expected_cols
-            ]
-            matched_df = matched_df[display_cols + other_cols]
-
-            for idx, row in matched_df.iterrows():
-                with st.expander(
-                    f"👤 信徒：{row.get('姓名', '')} - 手機：{row.get('手機', '無')}",
-                    expanded=True,
-                ):
-                    c1, c2, c3 = st.columns(3)
-                    c1.markdown(f"**生辰年月日：** {row.get('生辰年月日', '')}")
-                    c1.markdown(f"**生時：** {row.get('生時', '')}")
-
-                    c2.markdown(f"**手機：** {row.get('手機', '')}")
-                    c2.markdown(f"**住址：** {row.get('住址', '')}")
-                    c2.markdown(f"**編號：** {row.get('編號', '')}")
-
-                    c3.markdown(f"**2026丁/口：** {row.get('2026丁/口', '')}")
-                    c3.markdown(f"**2026光明燈：** {row.get('2026光明燈', '')}")
-                    c3.markdown(f"**2026太歲：** {row.get('2026太歲', '')}")
-
-        else:
-            st.info(f"查無姓名為「{search_name}」的信徒資料，可於下方手動輸入新增：")
-
-            with st.form("add_believer_form"):
-                st.subheader("➕ 手動新增信徒資料")
-                col1, col2 = st.columns(2)
-
-                name_input = col1.text_input("姓名", value=search_name)
-
-                birth_date = col1.text_input(
-                    "生辰年月日", placeholder="例：農曆68年3月15日 或 1979-04-11"
+            if name_matches.empty:
+                st.warning(
+                    f"查無姓名為「{search_name}」的信徒資料，"
+                    "請先至「新增信徒資料」建立相關資料。"
                 )
-                birth_time = col2.text_input(
-                    "生時", placeholder="例：吉時、子時(23-01)"
-                )
+            else:
+                st.success(f"已確認信徒「{search_name}」，請查詢全家人資料。")
 
-                phone = col1.text_input("手機")
-                address = col2.text_input("住址")
+                with st.form("believer_family_search"):
+                    phone_input = st.text_input(
+                        "主要聯絡人手機（優先查詢）"
+                    ).strip()
+                    address_input = st.text_input(
+                        "住址（沒有手機時使用）"
+                    ).strip()
+                    search_family = st.form_submit_button("查詢全家人資料")
 
-                st.markdown("---")
-                col3, col4, col5 = st.columns(3)
-                dinkou_2026 = col3.text_input("2026丁/口")
-                guangming_2026 = col4.text_input("2026光明燈")
-                taisui_2026 = col5.text_input("2026太歲")
-
-                submit_btn = st.form_submit_button("新增並存入 Google Sheet")
-
-                if submit_btn:
-                    if not name_input:
-                        st.error("姓名為必填欄位！")
-                    else:
-                        payload = {
-                            "姓名": name_input,
-                            "生辰年月日": birth_date,
-                            "生時": birth_time,
-                            "住址": address,
-                            "手機": phone,
-                            "2026丁/口": dinkou_2026,
-                            "2026光明燈": guangming_2026,
-                            "2026太歲": taisui_2026,
-                        }
-                        result = save_believer_data(payload)
-                        if result:
-                            st.success(
-                                f"成功新增資料至 Google Sheet！編號：{result.get('number', '已自動編號')}"
+                if search_family:
+                    phone_column = next(
+                        (
+                            column
+                            for column in ("手機", "電話")
+                            if column in df.columns
+                        ),
+                        None,
+                    )
+                    address_column = next(
+                        (
+                            column
+                            for column in ("住址", "地址")
+                            if column in df.columns
+                        ),
+                        None,
+                    )
+                    if _normalize_believer_phone(phone_input):
+                        if phone_column:
+                            normalized_phones = df[phone_column].map(
+                                _normalize_believer_phone
                             )
-                            st.rerun()
+                            family_df = df[
+                                normalized_phones
+                                == _normalize_believer_phone(phone_input)
+                            ]
+                        else:
+                            family_df = df.iloc[0:0]
+                    elif _normalize_believer_address(address_input):
+                        if address_column:
+                            normalized_addresses = df[address_column].map(
+                                _normalize_believer_address
+                            )
+                            family_df = df[
+                                normalized_addresses
+                                == _normalize_believer_address(address_input)
+                            ]
+                        else:
+                            family_df = df.iloc[0:0]
+                    else:
+                        family_df = df.iloc[0:0]
+
+                    if family_df.empty:
+                        st.warning(
+                            "找不到相同手機或住址的信徒資料，"
+                            "請先至「新增信徒資料」建立相關資料。"
+                        )
+                    else:
+                        display_columns = [
+                            "住址",
+                            "信士/信女",
+                            "姓名",
+                            "生辰年月日",
+                            "生時",
+                        ]
+                        result_df = pd.DataFrame(index=family_df.index)
+                        for column in display_columns:
+                            if column == "住址" and column not in family_df:
+                                source_column = "地址"
+                            else:
+                                source_column = column
+                            result_df[column] = (
+                                family_df[source_column]
+                                if source_column in family_df.columns
+                                else ""
+                            )
+                        st.success(f"共找到 {len(result_df)} 位家人資料：")
+                        st.dataframe(
+                            result_df,
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+
+elif menu_option == "一、信徒資料" and submenu_option == "新增信徒資料":
+    st.header("➕ 新增信徒資料")
+    st.caption(
+        "手機為主要聯絡人資料；若生辰或生時不詳，請填寫「未提供」。"
+    )
+
+    with st.form("add_believer_form"):
+        phone = st.text_input("手機（主要聯絡人）")
+        address = st.text_input("住址")
+        believer_type = st.selectbox("信士/信女", ["信士", "信女"])
+        name = st.text_input("姓名")
+        birth_date = st.text_input(
+            "生辰年月日", placeholder="例：農曆68年3月15日 或 1979-04-11"
+        )
+        birth_time = st.text_input(
+            "生時", placeholder="例：吉時、子時（23-01）"
+        )
+        submit_believer = st.form_submit_button("新增並存入 Google Sheet")
+
+    if submit_believer:
+        missing_fields = [
+            label
+            for label, value in (
+                ("手機", phone),
+                ("住址", address),
+                ("姓名", name),
+                ("生辰年月日", birth_date),
+                ("生時", birth_time),
+            )
+            if not value.strip()
+        ]
+        if missing_fields:
+            st.error(f"以下欄位為必填：{'、'.join(missing_fields)}。")
+        else:
+            payload = {
+                "手機": phone.strip(),
+                "住址": address.strip(),
+                "信士/信女": believer_type,
+                "姓名": name.strip(),
+                "生辰年月日": birth_date.strip(),
+                "生時": birth_time.strip(),
+            }
+            result = save_believer_data(payload)
+            if result:
+                st.success(
+                    f"成功新增資料至 Google Sheet！編號：{result.get('number', '已自動編號')}"
+                )
+                st.rerun()
 
 # -----------------------------------------------------------------------------
 # 功能二：各類收據開立
