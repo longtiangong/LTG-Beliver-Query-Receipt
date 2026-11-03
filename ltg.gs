@@ -684,6 +684,31 @@ function doPost(e) {
     }
 
     var headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    var believerFields = [
+      { header: "手機", aliases: ["電話"] },
+      { header: "住址", aliases: ["地址"] },
+      { header: "信士/信女", aliases: [] },
+      { header: "姓名", aliases: [] },
+      { header: "生辰年月日", aliases: [] },
+      { header: "生時", aliases: [] }
+    ];
+    var missingHeaders = believerFields.filter(function(field) {
+      return !field.aliases.concat([field.header]).some(function(candidate) {
+        return headers.some(function(existingHeader) {
+          return normalizeHeader(existingHeader) === normalizeHeader(candidate);
+        });
+      });
+    }).map(function(field) {
+      return field.header;
+    });
+    if (missingHeaders.length) {
+      sheet
+        .getRange(1, lastColumn + 1, 1, missingHeaders.length)
+        .setValues([missingHeaders]);
+      headers = headers.concat(missingHeaders);
+      lastColumn = headers.length;
+    }
+
     var numberColumn = headers.findIndex(function(header) {
       return normalizeHeader(header) === "編號";
     });
@@ -713,6 +738,18 @@ function doPost(e) {
       var normalizedHeader = normalizeHeader(header);
       if (normalizedHeader === "編號") {
         return newNumber;
+      }
+      if (
+        normalizedHeader === "地址" &&
+        contents["住址"] !== undefined
+      ) {
+        return contents["住址"];
+      }
+      if (
+        normalizedHeader === "電話" &&
+        contents["手機"] !== undefined
+      ) {
+        return contents["手機"];
       }
       return contents[normalizedHeader] !== undefined
         ? contents[normalizedHeader]
