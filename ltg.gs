@@ -756,7 +756,19 @@ function doPost(e) {
         : "";
     });
 
-    sheet.appendRow(newRow);
+    var phoneColumn = headers.findIndex(function(header) {
+      var normalizedHeader = normalizeHeader(header);
+      return normalizedHeader === "手機" || normalizedHeader === "電話";
+    });
+    var newRowNumber = sheet.getLastRow() + 1;
+    if (phoneColumn !== -1) {
+      sheet
+        .getRange(newRowNumber, phoneColumn + 1)
+        .setNumberFormat("@");
+    }
+    sheet
+      .getRange(newRowNumber, 1, 1, newRow.length)
+      .setValues([newRow]);
     return jsonOutput({
       status: "success",
       message: "資料寫入成功",
