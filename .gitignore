@@ -2,6 +2,5 @@
 __pycache__/
 *.pyc
 app.gs
-ltg.gs
 appsscript.json
 .DS_Store
