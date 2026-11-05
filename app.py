@@ -46,6 +46,7 @@ if not st.session_state.authenticated:
 # -----------------------------------------------------------------------------
 GAS_URL = st.secrets.get("GAS_URL", "")
 GAS_API_KEY = st.secrets.get("GAS_API_KEY", "")
+RECEIPT_PDF_FOLDER_ID = st.secrets.get("RECEIPT_PDF_FOLDER_ID", "")
 
 INCOME_CATEGORIES = {
     "法會進香報名": (
@@ -281,6 +282,9 @@ def save_expense_record(expense, pdf_bytes):
     if not GAS_API_KEY:
         st.error("未設定 GAS_API_KEY，無法儲存支出。")
         return None
+    if not RECEIPT_PDF_FOLDER_ID:
+        st.error("未設定 RECEIPT_PDF_FOLDER_ID，無法儲存支出 PDF。")
+        return None
     try:
         res = requests.post(
             GAS_URL,
@@ -289,6 +293,7 @@ def save_expense_record(expense, pdf_bytes):
                 "apiKey": GAS_API_KEY,
                 "expense": expense,
                 "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
+                "receiptPdfFolderId": RECEIPT_PDF_FOLDER_ID,
             },
             timeout=30,
         )
@@ -633,6 +638,9 @@ def save_receipt_record(receipt, pdf_bytes):
     if not GAS_API_KEY:
         st.error("未設定 GAS_API_KEY，請先完成收據總表 API 金鑰設定。")
         return None
+    if not RECEIPT_PDF_FOLDER_ID:
+        st.error("未設定 RECEIPT_PDF_FOLDER_ID，無法儲存收據 PDF。")
+        return None
     try:
         res = requests.post(
             GAS_URL,
@@ -641,6 +649,7 @@ def save_receipt_record(receipt, pdf_bytes):
                 "apiKey": GAS_API_KEY,
                 "receipt": receipt,
                 "pdfBase64": base64.b64encode(pdf_bytes).decode("ascii"),
+                "receiptPdfFolderId": RECEIPT_PDF_FOLDER_ID,
             },
             timeout=30,
         )

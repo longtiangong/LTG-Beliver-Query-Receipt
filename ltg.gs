@@ -351,7 +351,7 @@ function getReceiptOptions() {
   return getFinanceOptions(INCOME_OPTIONS_SHEET_NAME, true);
 }
 
-function saveReceiptRecord(receipt, pdfBase64) {
+function saveReceiptRecord(receipt, pdfBase64, receiptPdfFolderId) {
   if (!receipt || !receipt["姓名"]) {
     throw new Error("收據姓名為必填欄位。");
   }
@@ -424,7 +424,7 @@ function saveReceiptRecord(receipt, pdfBase64) {
       "application/pdf",
       receiptId + ".pdf"
     );
-    pdfFile = DriveApp.createFile(pdfBlob);
+    pdfFile = getReceiptPdfFolder(receiptPdfFolderId).createFile(pdfBlob);
     pdfFile.setSharing(DriveApp.Access.ANYONE, DriveApp.Permission.VIEW);
     record["PDF連結"] = pdfFile.getUrl();
 
@@ -470,7 +470,7 @@ function saveReceiptRecord(receipt, pdfBase64) {
   return record;
 }
 
-function saveExpenseRecord(expense, pdfBase64) {
+function saveExpenseRecord(expense, pdfBase64, receiptPdfFolderId) {
   if (!expense || !expense["科目"]) {
     throw new Error("支出科目為必填欄位。");
   }
@@ -537,7 +537,7 @@ function saveExpenseRecord(expense, pdfBase64) {
       "application/pdf",
       receiptId + ".pdf"
     );
-    pdfFile = DriveApp.createFile(pdfBlob);
+    pdfFile = getReceiptPdfFolder(receiptPdfFolderId).createFile(pdfBlob);
     pdfFile.setSharing(DriveApp.Access.ANYONE, DriveApp.Permission.VIEW);
     record["PDF連結"] = pdfFile.getUrl();
     appended = appendFinanceLedgerRecord(EXPENSE_SHEET_NAME, record);
@@ -554,6 +554,13 @@ function saveExpenseRecord(expense, pdfBase64) {
     throw new Error("支出收執聯 PDF 或支出表寫入失敗：" + saveError.message);
   }
   return record;
+}
+
+function getReceiptPdfFolder(folderId) {
+  if (!folderId) {
+    throw new Error("未設定 RECEIPT_PDF_FOLDER_ID，無法儲存收據 PDF。");
+  }
+  return DriveApp.getFolderById(String(folderId));
 }
 
 function doGet(e) {
@@ -657,7 +664,8 @@ function doPost(e) {
       }
       var savedReceipt = saveReceiptRecord(
         contents.receipt,
-        contents.pdfBase64
+        contents.pdfBase64,
+        contents.receiptPdfFolderId
       );
       return jsonOutput({
         status: "success",
@@ -672,7 +680,11 @@ function doPost(e) {
       return jsonOutput({
         status: "success",
         message: "支出已加入支出表",
-        record: saveExpenseRecord(contents.expense, contents.pdfBase64)
+        record: saveExpenseRecord(
+          contents.expense,
+          contents.pdfBase64,
+          contents.receiptPdfFolderId
+        )
       });
     }
 
